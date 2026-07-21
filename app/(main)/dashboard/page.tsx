@@ -182,6 +182,7 @@ export default function DashboardPage() {
   const router = useRouter();
   const [trendData, setTrendData] = useState(generateTrendData());
   const [incidents, setIncidents] = useState<Incident[]>([]);
+  const [incidentsLoaded, setIncidentsLoaded] = useState(false);
   const [hotspots, setHotspots]   = useState<Hotspot[]>([]);
   const [hotspotsLoaded, setHotspotsLoaded] = useState(false);
   const [hotspotMeta, setHotspotMeta] = useState<HotspotMeta>({
@@ -248,9 +249,8 @@ export default function DashboardPage() {
           : Array.isArray((unwrapped as { incidents?: unknown[] })?.incidents)
             ? (unwrapped as { incidents: unknown[] }).incidents
             : [];
-        if (rawInc.length) {
-          setIncidents(
-            rawInc.slice(0, 3).map((inc: {
+        setIncidents(
+          rawInc.slice(0, 3).map((inc: {
               id: number;
               incident_type: string;
               description?: string;
@@ -264,9 +264,9 @@ export default function DashboardPage() {
               severity:    inc.severity || 'low',
               reported_at: inc.reported_at,
             }))
-          );
-        }
+        );
       }
+      setIncidentsLoaded(true);
 
       try {
         type HotspotRow = {
@@ -396,14 +396,13 @@ export default function DashboardPage() {
       }
 
       if (trendRes.status === 'fulfilled' && trendRes.value.data?.data_points) {
-        setTrendData(
-          trendRes.value.data.data_points
-            .filter((p) => p.has_data !== false && p.congestion_level != null)
-            .map((p) => ({
-              time:       `${String(p.hour).padStart(2, '0')}:00`,
-              congestion: Math.round(Number(p.congestion_level) * 100),
-            }))
-        );
+        const points = trendRes.value.data.data_points
+          .filter((p) => p.has_data !== false && p.congestion_level != null)
+          .map((p) => ({
+            time:       `${String(p.hour).padStart(2, '0')}:00`,
+            congestion: Math.round(Number(p.congestion_level) * 100),
+          }));
+        setTrendData(points.length > 0 ? points : generateTrendData());
       } else if (trendRes.status === 'rejected') {
         setTrendData(generateTrendData());
       }
@@ -598,7 +597,9 @@ export default function DashboardPage() {
               background: 'rgba(239,68,68,0.08)', color: '#ef4444',
               border: '1px solid rgba(239,68,68,0.2)', boxShadow: '0 0 8px rgba(239,68,68,0.12)',
             }}>
-              {incidents.length > 0 ? `${incidents.length} active` : 'loading…'}
+              {incidents.length > 0
+                ? `${incidents.length} active`
+                : incidentsLoaded ? '0 active' : 'loading…'}
             </span>
           </div>
 
