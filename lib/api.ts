@@ -1,6 +1,21 @@
 import axios, { AxiosError, InternalAxiosRequestConfig } from 'axios';
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api/v1';
+const PRODUCTION_API_BASE = 'https://flowcast-backend-1.onrender.com/api/v1';
+const LOCAL_API_BASE = 'http://localhost:8000/api/v1';
+
+function validBaseUrl(value: string | undefined, protocols: string[]): string | null {
+  if (!value) return null;
+  try {
+    const url = new URL(value.trim());
+    return protocols.includes(url.protocol) ? value.trim().replace(/\/+$/, '') : null;
+  } catch {
+    return null;
+  }
+}
+
+const API_BASE =
+  validBaseUrl(process.env.NEXT_PUBLIC_API_URL, ['http:', 'https:']) ??
+  (process.env.NODE_ENV === 'production' ? PRODUCTION_API_BASE : LOCAL_API_BASE);
 
 /** Match the backend's hard ceiling so requests cannot leave the UI waiting indefinitely. */
 const DEFAULT_TIMEOUT_MS = 9000;
@@ -149,7 +164,8 @@ api.interceptors.response.use(
 export default api;
 
 export function wsBase(): string {
-  if (process.env.NEXT_PUBLIC_WS_URL) return process.env.NEXT_PUBLIC_WS_URL;
+  const configured = validBaseUrl(process.env.NEXT_PUBLIC_WS_URL, ['ws:', 'wss:']);
+  if (configured) return configured;
   return API_BASE.replace(/^http/, 'ws');
 }
 

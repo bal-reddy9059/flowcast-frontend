@@ -93,14 +93,17 @@ export default function LoginPage() {
   };
 
   return (
-    <div style={{ minHeight: '100vh', display: 'flex', fontFamily: 'var(--font-sans, system-ui, sans-serif)' }}>
+    <div style={{
+      width: '100%', height: '100dvh', display: 'flex', overflow: 'hidden',
+      fontFamily: 'var(--font-sans, system-ui, sans-serif)',
+    }}>
 
       {/* ── Left panel ──────────────────────────────── */}
       <div
         className="hidden lg:flex"
         style={{
           width: '44%', flexShrink: 0,
-          display: 'flex', flexDirection: 'column',
+          minWidth: 0, height: '100%', flexDirection: 'column',
           justifyContent: 'space-between',
           padding: '40px',
           position: 'relative', overflow: 'hidden',
@@ -225,8 +228,10 @@ export default function LoginPage() {
       {/* ── Right panel (form) ────────────────────────── */}
       <div
         style={{
-          flex: 1, display: 'flex', alignItems: 'center', justifyContent: 'center',
-          padding: '40px 24px', position: 'relative',
+          flex: 1, minWidth: 0, height: '100%', display: 'flex',
+          alignItems: 'flex-start', justifyContent: 'center',
+          padding: 'clamp(20px, 5vh, 40px) clamp(16px, 4vw, 24px)',
+          position: 'relative', overflowX: 'hidden', overflowY: 'auto',
           background: 'linear-gradient(135deg, #f8faff 0%, #f1f5f9 50%, #f0f4ff 100%)',
         }}
       >
@@ -242,7 +247,7 @@ export default function LoginPage() {
         <FloatingOrb style={{ width: 300, height: 300, background: 'rgba(139,92,246,0.07)', top: -60, right: -60 }} />
         <FloatingOrb style={{ width: 200, height: 200, background: 'rgba(59,130,246,0.06)', bottom: -40, left: -40 }} />
 
-        <div style={{ width: '100%', maxWidth: 420, position: 'relative' }}>
+        <div style={{ width: '100%', maxWidth: 420, minWidth: 0, position: 'relative', margin: 'auto 0' }}>
 
           {/* Mobile logo */}
           <div className="flex items-center gap-2.5 mb-8 lg:hidden">
@@ -259,7 +264,7 @@ export default function LoginPage() {
 
           {/* Heading */}
           <div style={{ marginBottom: 28 }}>
-            <h1 style={{ fontSize: 28, fontWeight: 800, color: '#0f172a', letterSpacing: '-0.03em', marginBottom: 6 }}>
+            <h1 style={{ fontSize: 'clamp(24px, 5vw, 28px)', fontWeight: 800, color: '#0f172a', letterSpacing: '-0.03em', marginBottom: 6 }}>
               Welcome back
             </h1>
             <p style={{ fontSize: 14, color: '#64748b' }}>Sign in to your Flow India account</p>
@@ -271,7 +276,8 @@ export default function LoginPage() {
               background: 'rgba(255,255,255,0.95)',
               borderRadius: 20,
               border: '1px solid rgba(59,130,246,0.12)',
-              padding: '30px',
+              padding: 'clamp(20px, 5vw, 30px)',
+              width: '100%', boxSizing: 'border-box',
               boxShadow: '0 8px 40px -8px rgba(59,130,246,0.18), 0 2px 8px rgba(0,0,0,0.04), inset 0 1px 0 rgba(255,255,255,0.9)',
               backdropFilter: 'blur(12px)',
               position: 'relative', overflow: 'hidden',

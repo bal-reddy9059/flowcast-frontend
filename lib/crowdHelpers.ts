@@ -434,15 +434,17 @@ export const isCrowdAvailable = (station: Pick<Station, 'crowdScore' | 'crowdLev
 
 /** Host origin for crowd WS (`/ws/crowd` is at server root, not under /api/v1). */
 export function crowdWsOrigin(): string {
-  const fromEnv = process.env.NEXT_PUBLIC_WS_URL;
-  if (fromEnv) {
-    return fromEnv.replace(/\/api\/v1\/?$/, '').replace(/\/$/, '');
+  const wsUrl = process.env.NEXT_PUBLIC_WS_URL?.trim();
+  if (wsUrl && /^wss?:\/\//i.test(wsUrl)) {
+    return wsUrl.replace(/\/api\/v1\/?$/, '').replace(/\/$/, '');
   }
-  const api = process.env.NEXT_PUBLIC_API_URL || '';
-  if (api) {
-    return api.replace(/^http/, 'ws').replace(/\/api\/v1\/?$/, '').replace(/\/$/, '');
+  const apiUrl = process.env.NEXT_PUBLIC_API_URL?.trim();
+  if (apiUrl && /^https?:\/\//i.test(apiUrl)) {
+    return apiUrl.replace(/^http/, 'ws').replace(/\/api\/v1\/?$/, '').replace(/\/$/, '');
   }
-  return 'ws://localhost:8000';
+  return process.env.NODE_ENV === 'production'
+    ? 'wss://flowcast-backend-1.onrender.com'
+    : 'ws://localhost:8000';
 }
 
 export function crowdWsUrl(stationId?: string): string {

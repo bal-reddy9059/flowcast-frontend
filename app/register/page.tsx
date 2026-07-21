@@ -59,8 +59,10 @@ export default function RegisterPage() {
 
   return (
     <div style={{
-      minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center',
-      padding: '40px 24px', position: 'relative',
+      width: '100%', height: '100dvh', display: 'flex',
+      alignItems: 'flex-start', justifyContent: 'center',
+      padding: 'clamp(20px, 5vh, 40px) clamp(16px, 4vw, 24px)',
+      position: 'relative', overflowX: 'hidden', overflowY: 'auto',
       background: 'linear-gradient(135deg, #f8faff 0%, #f1f5f9 50%, #f0f4ff 100%)',
       fontFamily: 'var(--font-sans, system-ui, sans-serif)',
     }}>
@@ -76,7 +78,10 @@ export default function RegisterPage() {
       <FloatingOrb style={{ width: 300, height: 300, background: 'rgba(59,130,246,0.07)', bottom: -60, left: -60 }} />
       <FloatingOrb style={{ width: 200, height: 200, background: 'rgba(16,185,129,0.06)', top: '50%', left: '45%' }} />
 
-      <div style={{ width: '100%', maxWidth: 480, position: 'relative' }} className={mounted ? 'slide-up' : ''}>
+      <div
+        style={{ width: '100%', maxWidth: 480, minWidth: 0, position: 'relative', margin: 'auto 0' }}
+        className={mounted ? 'slide-up' : ''}
+      >
 
         {/* Logo */}
         <div className="flex items-center justify-center gap-3 mb-8">
@@ -96,7 +101,7 @@ export default function RegisterPage() {
 
         {/* Heading */}
         <div style={{ textAlign: 'center', marginBottom: 28 }}>
-          <h1 style={{ fontSize: 28, fontWeight: 800, color: '#0f172a', letterSpacing: '-0.03em', marginBottom: 6 }}>
+          <h1 style={{ fontSize: 'clamp(24px, 5vw, 28px)', fontWeight: 800, color: '#0f172a', letterSpacing: '-0.03em', marginBottom: 6 }}>
             Create your account
           </h1>
           <p style={{ fontSize: 14, color: '#64748b' }}>Join India&apos;s leading traffic intelligence platform</p>
@@ -105,7 +110,8 @@ export default function RegisterPage() {
         {/* Card */}
         <div style={{
           background: 'rgba(255,255,255,0.95)', borderRadius: 22,
-          border: '1px solid rgba(59,130,246,0.12)', padding: '32px',
+          border: '1px solid rgba(59,130,246,0.12)',
+          padding: 'clamp(20px, 5vw, 32px)', width: '100%', boxSizing: 'border-box',
           boxShadow: '0 8px 40px -8px rgba(59,130,246,0.18), 0 2px 8px rgba(0,0,0,0.04)',
           backdropFilter: 'blur(12px)', position: 'relative', overflow: 'hidden',
         }}>
@@ -162,9 +168,12 @@ export default function RegisterPage() {
 
               {/* Password strength */}
               {form.password && (
-                <div style={{ marginTop: 10, display: 'flex', gap: 10 }}>
+                <div style={{
+                  marginTop: 10, display: 'grid',
+                  gridTemplateColumns: 'repeat(auto-fit, minmax(110px, 1fr))', gap: 10,
+                }}>
                   {pwdChecks.map(({ label, ok }) => (
-                    <div key={label} className="flex items-center gap-1.5" style={{ flex: 1 }}>
+                    <div key={label} className="flex items-center gap-1.5">
                       <span style={{
                         width: 16, height: 16, borderRadius: '50%', display: 'flex',
                         alignItems: 'center', justifyContent: 'center', flexShrink: 0,
