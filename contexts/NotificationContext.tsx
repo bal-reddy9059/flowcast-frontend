@@ -60,6 +60,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
   const [isConnected, setIsConnected] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
   const retryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const stableConnectionRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const connectWSRef = useRef<() => void>(() => {});
   const mountedRef = useRef(true);
   const attemptRef = useRef(0);
@@ -131,12 +132,22 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
 
     ws.onopen = () => {
       if (wsRef.current !== ws) return;
-      attemptRef.current = 0;
+      if (stableConnectionRef.current) clearTimeout(stableConnectionRef.current);
+      // Do not reset retries immediately: a server that accepts and closes in a
+      // loop would otherwise reconnect forever. Only a stable connection earns
+      // a fresh retry budget.
+      stableConnectionRef.current = setTimeout(() => {
+        if (wsRef.current === ws && ws.readyState === WebSocket.OPEN) {
+          attemptRef.current = 0;
+        }
+      }, 60_000);
       if (mountedRef.current) setIsConnected(true);
     };
 
     ws.onclose = (event) => {
       if (wsRef.current !== ws) return;
+      if (stableConnectionRef.current) clearTimeout(stableConnectionRef.current);
+      stableConnectionRef.current = null;
       wsRef.current = null;
       if (!mountedRef.current) return;
       setIsConnected(false);
@@ -206,6 +217,8 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
       document.removeEventListener('visibilitychange', reconnectWhenVisible);
       if (retryRef.current) clearTimeout(retryRef.current);
       retryRef.current = null;
+      if (stableConnectionRef.current) clearTimeout(stableConnectionRef.current);
+      stableConnectionRef.current = null;
       if (wsRef.current) {
         wsRef.current.onopen = null;
         wsRef.current.onclose = null;
