@@ -151,10 +151,12 @@ function InsightCard({
 
 /* ── Live summary strip ──────────────────────────────────────────── */
 function LiveSummaryStrip({ summary }: { summary: LiveSummary }) {
-  const peakLabel = summary.peak_hours_today
+  const peaks = Array.isArray(summary.peak_hours_today) ? summary.peak_hours_today : [];
+  const peakLabel = peaks
     .slice(0, 3)
     .map((h) => `${String(h).padStart(2, '0')}:00`)
     .join(', ');
+  const breakdown = summary.congestion_breakdown ?? { high: 0, medium: 0, low: 0 };
 
   return (
     <div
@@ -183,7 +185,7 @@ function LiveSummaryStrip({ summary }: { summary: LiveSummary }) {
             <p style={{ fontSize: 10.5, color: '#64748b', fontWeight: 600 }}>Avg Speed</p>
           </div>
           <p style={{ fontSize: 22, fontWeight: 800, color: '#fff', letterSpacing: '-0.02em', lineHeight: 1, textShadow: '0 0 12px rgba(59,130,246,0.5)' }}>
-            {summary.avg_speed_kmh.toFixed(0)}
+            {Number(summary.avg_speed_kmh ?? 0).toFixed(0)}
           </p>
           <p style={{ fontSize: 10, color: '#475569', marginTop: 2 }}>km/h</p>
         </div>
@@ -195,7 +197,7 @@ function LiveSummaryStrip({ summary }: { summary: LiveSummary }) {
             <p style={{ fontSize: 10.5, color: '#64748b', fontWeight: 600 }}>Incidents</p>
           </div>
           <p style={{ fontSize: 22, fontWeight: 800, color: summary.active_incidents > 3 ? '#f87171' : '#fff', letterSpacing: '-0.02em', lineHeight: 1, textShadow: summary.active_incidents > 3 ? '0 0 12px rgba(239,68,68,0.6)' : 'none' }}>
-            {summary.active_incidents}
+            {summary.active_incidents ?? 0}
           </p>
           <p style={{ fontSize: 10, color: '#475569', marginTop: 2 }}>active now</p>
         </div>
@@ -208,9 +210,9 @@ function LiveSummaryStrip({ summary }: { summary: LiveSummary }) {
           </div>
           <div style={{ display: 'flex', gap: 6, marginTop: 4 }}>
             {[
-              { label: 'H', value: summary.congestion_breakdown.high,   color: '#ef4444' },
-              { label: 'M', value: summary.congestion_breakdown.medium, color: '#f59e0b' },
-              { label: 'L', value: summary.congestion_breakdown.low,    color: '#10b981' },
+              { label: 'H', value: breakdown.high ?? 0, color: '#ef4444' },
+              { label: 'M', value: breakdown.medium ?? 0, color: '#f59e0b' },
+              { label: 'L', value: breakdown.low ?? 0, color: '#10b981' },
             ].map(({ label, value, color }) => (
               <div key={label} style={{ textAlign: 'center' }}>
                 <p style={{ fontSize: 16, fontWeight: 800, color, lineHeight: 1, textShadow: `0 0 8px ${color}60` }}>{value}</p>
@@ -238,7 +240,7 @@ function LiveSummaryStrip({ summary }: { summary: LiveSummary }) {
             <p style={{ fontSize: 10.5, color: '#64748b', fontWeight: 600 }}>Top Hotspot</p>
           </div>
           <p style={{ fontSize: 12.5, fontWeight: 700, color: '#f87171', lineHeight: 1.4, marginTop: 4, textShadow: '0 0 8px rgba(239,68,68,0.4)' }}>
-            {summary.top_hotspot}
+            {summary.top_hotspot || '—'}
           </p>
         </div>
       </div>
@@ -247,29 +249,63 @@ function LiveSummaryStrip({ summary }: { summary: LiveSummary }) {
 }
 
 /* ── Page ────────────────────────────────────────────────────────── */
+function unwrapFleetInsights(body: unknown): FleetInsightsResult {
+  const root = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>;
+  const inner = (root.data && typeof root.data === 'object' ? root.data : root) as Record<string, unknown>;
+  const insightsRaw = inner.insights;
+  const insights = Array.isArray(insightsRaw) ? (insightsRaw as FleetInsight[]) : [];
+  const live = (inner.live_summary && typeof inner.live_summary === 'object'
+    ? inner.live_summary
+    : {}) as Partial<LiveSummary>;
+  return {
+    org_id: String(inner.org_id ?? ''),
+    org_name: String(inner.org_name ?? 'Fleet'),
+    vehicle_count: Number(inner.vehicle_count ?? 0),
+    live_summary: {
+      avg_speed_kmh: Number(live.avg_speed_kmh ?? 0),
+      active_incidents: Number(live.active_incidents ?? 0),
+      congestion_breakdown: {
+        high: Number(live.congestion_breakdown?.high ?? 0),
+        medium: Number(live.congestion_breakdown?.medium ?? 0),
+        low: Number(live.congestion_breakdown?.low ?? 0),
+      },
+      peak_hours_today: Array.isArray(live.peak_hours_today) ? live.peak_hours_today.map(Number) : [],
+      top_hotspot: String(live.top_hotspot ?? '—'),
+    },
+    insights,
+    message: inner.message != null ? String(inner.message) : undefined,
+    generated_at: String(inner.generated_at ?? new Date().toISOString()),
+  };
+}
+
 export default function FleetInsightsPage() {
   const [loading, setLoading] = useState(false);
   const [result, setResult] = useState<FleetInsightsResult | null>(null);
+  const [error, setError] = useState('');
   const [acknowledged, setAcknowledged] = useState<Set<number>>(new Set());
 
   const generate = useCallback(async () => {
     setLoading(true);
     setResult(null);
+    setError('');
     setAcknowledged(new Set());
     try {
       // Backend auto-resolves "demo-org" → user's first org, or auto-creates one
-      const res = await api.get<FleetInsightsResult>('/fleet/demo-org/ai-insights');
-      setResult(res.data);
-    } catch {
+      const res = await api.get('/fleet/demo-org/ai-insights');
+      setResult(unwrapFleetInsights(res.data));
+    } catch (e) {
+      const err = e as { response?: { data?: { error?: string; detail?: string } }; message?: string };
+      setError(err.response?.data?.error || err.response?.data?.detail || err.message || 'Failed to load fleet insights');
+    } finally {
       setLoading(false);
     }
-    setLoading(false);
   }, []);
 
   // Auto-generate on mount
   useEffect(() => { void generate(); }, [generate]);
 
-  const activeInsights = result?.insights.filter((_, i) => !acknowledged.has(i)) ?? [];
+  const insights = result?.insights ?? [];
+  const activeInsights = insights.filter((_, i) => !acknowledged.has(i));
   const resolvedCount = acknowledged.size;
 
   return (
@@ -326,6 +362,12 @@ export default function FleetInsightsPage() {
       </div>
 
       {/* ── Loading ───────────────────────────── */}
+      {error && !loading && (
+        <div style={{ padding: '12px 14px', borderRadius: 12, background: '#fef2f2', border: '1px solid #fecaca', color: '#b91c1c', fontSize: 13 }}>
+          {error}
+        </div>
+      )}
+
       {loading && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
           <div
@@ -394,7 +436,7 @@ export default function FleetInsightsPage() {
               </div>
               <div style={{ display: 'flex', gap: 8 }}>
                 {[
-                  { label: 'Total',    value: result.insights.length, color: '#3b82f6', glow: 'rgba(59,130,246,0.4)'  },
+                  { label: 'Total',    value: insights.length, color: '#3b82f6', glow: 'rgba(59,130,246,0.4)'  },
                   { label: 'Active',   value: activeInsights.length,   color: '#ef4444', glow: 'rgba(239,68,68,0.4)'  },
                   { label: 'Resolved', value: resolvedCount,           color: '#10b981', glow: 'rgba(16,185,129,0.4)' },
                 ].map(({ label, value, color, glow }) => (
@@ -413,11 +455,11 @@ export default function FleetInsightsPage() {
           {/* Insights */}
           {activeInsights.length > 0 ? (
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 14 }}>
-              {result.insights.map((insight, i) => {
+              {insights.map((insight, i) => {
                 if (acknowledged.has(i)) return null;
                 return (
                   <InsightCard
-                    key={i}
+                    key={`${insight.type}-${i}`}
                     insight={insight}
                     onResolve={() => setAcknowledged((prev) => new Set([...prev, i]))}
                   />

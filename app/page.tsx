@@ -1,27 +1,11 @@
-'use client';
+import { cookies } from 'next/headers';
+import { redirect } from 'next/navigation';
 
-import { useEffect } from 'react';
-import { useRouter } from 'next/navigation';
-import { useAuth } from '@/contexts/AuthContext';
-
-export default function HomePage() {
-  const { isAuthenticated, isLoading } = useAuth();
-  const router = useRouter();
-
-  useEffect(() => {
-    if (!isLoading) {
-      router.replace(isAuthenticated ? '/dashboard' : '/login');
-    }
-  }, [isAuthenticated, isLoading, router]);
-
-  return (
-    <div className="flex items-center justify-center h-full" style={{ background: '#f4f6f9' }}>
-      <div
-        className="w-10 h-10 rounded-xl flex items-center justify-center"
-        style={{ background: 'linear-gradient(135deg, #2563eb, #7c3aed)' }}
-      >
-        <span className="text-white font-bold text-lg">F</span>
-      </div>
-    </div>
-  );
+// Server component — runs on the server before any HTML is sent.
+// Middleware handles this redirect for subsequent navigations;
+// this handles the very first cold load when no middleware cache exists.
+export default async function HomePage() {
+  const cookieStore = await cookies();
+  const token = cookieStore.get('flowcast_token')?.value;
+  redirect(token ? '/dashboard' : '/login');
 }

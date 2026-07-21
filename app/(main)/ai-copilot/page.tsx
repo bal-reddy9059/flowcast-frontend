@@ -2,7 +2,7 @@
 
 import { useState, useRef, useEffect, useCallback } from 'react';
 import { Bot, Send, User, MapPin, Sparkles, RefreshCw, Zap, ChevronRight } from 'lucide-react';
-import api from '@/lib/api';
+import { aiApi } from '@/lib/api';
 
 interface Message {
   id: string;
@@ -135,12 +135,17 @@ export default function AICopilotPage() {
   const [input, setInput] = useState('');
   const [loading, setLoading] = useState(false);
   const [location, setLocation] = useState('Mumbai');
+  const [commuteInsight, setCommuteInsight] = useState('');
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages, loading]);
+
+  useEffect(() => {
+    void aiApi.commuteInsight(location).then((res) => setCommuteInsight(res.data?.insight ?? res.data?.summary ?? JSON.stringify(res.data))).catch(() => setCommuteInsight('Insight unavailable right now.'));
+  }, [location]);
 
   const sendMessage = useCallback(
     async (text: string) => {
@@ -157,7 +162,7 @@ export default function AICopilotPage() {
       setLoading(true);
 
       try {
-        const res = await api.post('/ai/chat', { message: text, location });
+        const res = await aiApi.chat(text, location);
         const reply = res.data?.reply ?? res.data?.message ?? getFallback(text);
         setMessages((prev) => [
           ...prev,
@@ -427,6 +432,10 @@ export default function AICopilotPage() {
 
         {/* Context panel */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
+          <div className="neon-card" style={{ padding: '14px 16px' }}>
+            <p style={{ fontSize: 11, fontWeight: 700, color: '#8b5cf6', textTransform: 'uppercase', marginBottom: 6 }}>Weekly commute insight</p>
+            <p style={{ fontSize: 12, color: '#64748b', lineHeight: 1.5 }}>{commuteInsight || 'Loading insight…'}</p>
+          </div>
 
           {/* AI info card */}
           <div

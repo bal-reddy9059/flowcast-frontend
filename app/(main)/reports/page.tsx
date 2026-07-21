@@ -1,55 +1,22 @@
 'use client';
 
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { FileBarChart, TrendingUp, TrendingDown, BarChart2, MapPin, Truck, Calendar, Download, RefreshCw } from 'lucide-react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, LineChart, Line, CartesianGrid, AreaChart, Area } from 'recharts';
-import api from '@/lib/api';
+import { reportsApi } from '@/lib/api';
+import type { ScheduledReport } from '@/lib/types';
 
-const DAILY_DATA = [
-  { hour: '06:00', congestion: 38, volume: 820 },
-  { hour: '07:00', congestion: 62, volume: 1540 },
-  { hour: '08:00', congestion: 84, volume: 2380 },
-  { hour: '09:00', congestion: 79, volume: 2120 },
-  { hour: '10:00', congestion: 55, volume: 1680 },
-  { hour: '11:00', congestion: 48, volume: 1440 },
-  { hour: '12:00', congestion: 54, volume: 1560 },
-  { hour: '13:00', congestion: 61, volume: 1720 },
-  { hour: '14:00', congestion: 50, volume: 1480 },
-  { hour: '15:00', congestion: 58, volume: 1620 },
-  { hour: '16:00', congestion: 72, volume: 1980 },
-  { hour: '17:00', congestion: 88, volume: 2460 },
-  { hour: '18:00', congestion: 91, volume: 2560 },
-  { hour: '19:00', congestion: 74, volume: 2020 },
-  { hour: '20:00', congestion: 52, volume: 1520 },
-  { hour: '21:00', congestion: 32, volume: 960  },
-];
-
-const WEEKLY_DATA = [
-  { day: 'Mon', avg_cong: 68, incidents: 14, peak_hour: '18:00' },
-  { day: 'Tue', avg_cong: 62, incidents: 11, peak_hour: '18:30' },
-  { day: 'Wed', avg_cong: 71, incidents: 18, peak_hour: '18:00' },
-  { day: 'Thu', avg_cong: 65, incidents: 13, peak_hour: '17:45' },
-  { day: 'Fri', avg_cong: 79, incidents: 22, peak_hour: '18:00' },
-  { day: 'Sat', avg_cong: 54, incidents: 8,  peak_hour: '12:00' },
-  { day: 'Sun', avg_cong: 41, incidents: 5,  peak_hour: '11:30' },
-];
-
-const HOTSPOT_DATA = [
-  { area: 'Andheri West',   severity: 88, city: 'Mumbai',    incidents: 34 },
-  { area: 'Koramangala',    severity: 82, city: 'Bengaluru', incidents: 28 },
-  { area: 'T Nagar',        severity: 78, city: 'Chennai',   incidents: 22 },
-  { area: 'Connaught Place',severity: 74, city: 'Delhi',     incidents: 19 },
-  { area: 'HITEC City',     severity: 69, city: 'Hyderabad', incidents: 16 },
-  { area: 'Hinjewadi',      severity: 65, city: 'Pune',      incidents: 14 },
-];
-
-const FLEET_DATA = [
-  { vehicle: 'MH-12-AB-1234', trips: 24, distance: 342, avg_speed: 38, fuel_used: 28, efficiency: 'A' },
-  { vehicle: 'KA-09-CD-5678', trips: 18, distance: 198, avg_speed: 42, fuel_used: 18, efficiency: 'A' },
-  { vehicle: 'DL-01-EF-9012', trips: 31, distance: 520, avg_speed: 29, fuel_used: 64, efficiency: 'B' },
-  { vehicle: 'TN-22-GH-3456', trips: 12, distance: 88,  avg_speed: 22, fuel_used: 6,  efficiency: 'A' },
-  { vehicle: 'GJ-01-IJ-7890', trips: 6,  distance: 44,  avg_speed: 34, fuel_used: 5,  efficiency: 'C' },
-];
+type DailyChartRow = { hour: string; congestion: number; volume: number };
+type WeeklyChartRow = { day: string; avg_cong: number; incidents: number; peak_hour: string };
+type HotspotChartRow = { area: string; severity: number; city: string; incidents: number };
+type FleetChartRow = {
+  vehicle: string;
+  trips: number;
+  distance: number;
+  avg_speed: number;
+  fuel_used: number;
+  efficiency: string;
+};
 
 type TabType = 'daily' | 'weekly' | 'hotspots' | 'fleet';
 
@@ -59,65 +26,61 @@ export default function ReportsPage() {
   const [tab,           setTab]          = useState<TabType>('daily');
   const [location,      setLocation]     = useState('Mumbai');
   const [loading,       setLoading]      = useState(false);
-  const [dailyData,     setDailyData]    = useState(DAILY_DATA);
-  const [weeklyData,    setWeeklyData]   = useState(WEEKLY_DATA);
-  const [hotspotData,   setHotspotData]  = useState(HOTSPOT_DATA);
-  const [fleetData,     setFleetData]    = useState(FLEET_DATA);
+  const [dailyData,     setDailyData]    = useState<DailyChartRow[]>([]);
+  const [weeklyData,    setWeeklyData]   = useState<WeeklyChartRow[]>([]);
+  const [hotspotData,   setHotspotData]  = useState<HotspotChartRow[]>([]);
+  const [fleetData,     setFleetData]    = useState<FleetChartRow[]>([]);
   const [fleetTotals,   setFleetTotals]  = useState<{ trips: number; distance: number; fuel: number } | null>(null);
   const [apiSummary,    setApiSummary]   = useState<{ peakToday: number; avgToday: number; totalVolume: number; weekAvg: number } | null>(null);
   const [apiComparison, setApiComparison] = useState<{ vsYesterday: string; vsLastWeek: string; peakShift: string; incidentsToday: number } | null>(null);
+  const [schedules, setSchedules] = useState<ScheduledReport[]>([]);
+  const [reportError, setReportError] = useState('');
+  const requestIdRef = useRef(0);
 
   const loadReport = useCallback(async () => {
+    const requestId = ++requestIdRef.current;
     setLoading(true);
+    setReportError('');
+    setApiSummary(null);
+    setApiComparison(null);
     try {
       if (tab === 'daily') {
-        const r = await api.get('/reports/daily-summary', { params: { location } });
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const allRows: any[] = r.data?.hourly_breakdown ?? r.data?.hourly ?? r.data?.data ?? [];
+        const r = await reportsApi.daily(location);
+        if (requestId !== requestIdRef.current) return;
         // Drop hours with no data (data_points === 0 → all fields null)
-        const rows = allRows.filter((d) => (d.data_points ?? 1) > 0);
-        if (rows.length) {
+        const rows = r.data.hourly_breakdown.filter((d) => d.data_points > 0);
+        if (requestId === requestIdRef.current) {
           setDailyData(rows.map((d) => {
             // congestion arrives as string ("low"/"medium"/"high") or number
-            const rawCong = d.congestion ?? d.avg_congestion ?? d.congestion_score ?? 0;
+            const rawCong = d.congestion ?? 0;
             const cong =
               rawCong === 'high'   ? 85 :
               rawCong === 'medium' ? 55 :
               rawCong === 'low'    ? 25 :
               typeof rawCong === 'number' ? Math.round(rawCong * (rawCong > 1 ? 1 : 100)) : 0;
             return {
-              hour:       d.time_label ?? d.hour_label ?? String(d.hour ?? d.hour_of_day ?? ''),
+              hour:       d.time_label,
               congestion: cong,
-              volume:     d.avg_vehicles ?? d.volume ?? d.vehicle_count ?? d.count ?? 0,
+              volume:     d.avg_vehicles ?? 0,
             };
           }));
         }
       } else if (tab === 'weekly') {
-        const r = await api.get('/reports/weekly-trend', { params: { location } });
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const rows: any[] = r.data?.days ?? r.data?.weekly ?? r.data?.data ?? [];
-        if (rows.length) {
+        const r = await reportsApi.weekly(location);
+        if (requestId !== requestIdRef.current) return;
+        const rows = r.data.days;
+        if (requestId === requestIdRef.current) {
           setWeeklyData(rows.map((d) => {
-            // avg_congestion_pct is the primary field; fall back to speed-derived
-            const rawCong = d.avg_congestion_pct ?? d.avg_cong ?? d.avg_congestion ?? d.congestion;
-            let cong: number;
-            if (rawCong != null && typeof rawCong === 'number') {
-              cong = Math.round(rawCong * (rawCong > 1 ? 1 : 100));
-            } else if (d.avg_speed_kmh != null) {
-              cong = Math.round(Math.max(0, Math.min(100, (1 - d.avg_speed_kmh / 60) * 100)));
-            } else {
-              cong = Math.round(d.high_congestion_pct ?? 0);
-            }
             return {
-              day:       d.day_label ?? d.day ?? d.weekday ?? '',
-              avg_cong:  cong,
-              incidents: d.incidents ?? d.incident_count ?? 0,
-              peak_hour: d.peak_hour ?? d.peak_time ?? '--:--',
+              day:       d.day_label,
+              avg_cong:  Math.round(d.avg_congestion_pct),
+              incidents: d.incidents,
+              peak_hour: d.peak_hour ?? '--:--',
             };
           }));
         }
         // Extract top-level summary and comparison blocks
-        const s = r.data?.summary;
+        const s = r.data.summary;
         if (s) {
           setApiSummary({
             peakToday:   Math.round(s.peak_today_pct ?? 0),
@@ -126,9 +89,8 @@ export default function ReportsPage() {
             weekAvg:     Math.round(s.week_avg_pct   ?? 0),
           });
         }
-        if (r.data?.vs_yesterday != null || r.data?.vs_last_week != null) {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const rd: any = r.data;
+        if (r.data.vs_yesterday != null || r.data.vs_last_week != null) {
+          const rd = r.data;
           setApiComparison({
             vsYesterday:    String(rd.vs_yesterday   ?? '+0.0%'),
             vsLastWeek:     String(rd.vs_last_week   ?? '-0.0%'),
@@ -137,33 +99,33 @@ export default function ReportsPage() {
           });
         }
       } else if (tab === 'hotspots') {
-        const r = await api.get('/reports/hotspot-analysis');
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const rows: any[] = r.data?.hotspots ?? r.data?.data ?? (Array.isArray(r.data) ? r.data : []);
-        if (rows.length) {
+        const r = await reportsApi.hotspots();
+        if (requestId !== requestIdRef.current) return;
+        const rows = r.data.hotspots;
+        if (requestId === requestIdRef.current) {
           setHotspotData(rows.map((h) => ({
-            area:      h.area ?? h.location ?? h.district ?? h.name ?? '',
-            city:      h.city ?? h.state ?? '',
+            area:      String(h.area ?? h.location ?? h.district ?? h.name ?? ''),
+            city:      String(h.city ?? h.state ?? ''),
             // congestion_pct = medium+high combined (bar chart metric)
-            severity:  Math.round(h.congestion_pct ?? h.high_congestion_pct ?? h.severity ?? 0),
-            incidents: h.incidents ?? h.incident_count ?? 0,
+            severity:  Math.round(Number(h.congestion_pct ?? h.high_congestion_pct ?? h.severity ?? 0)),
+            incidents: Number(h.incidents ?? h.incident_count ?? 0),
           })));
         }
       } else if (tab === 'fleet') {
-        const r = await api.get('/reports/fleet-overview');
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const rows: any[] = r.data?.vehicles ?? r.data?.fleet ?? (Array.isArray(r.data) ? r.data : []);
-        if (rows.length) {
+        const r = await reportsApi.fleetOverview();
+        if (requestId !== requestIdRef.current) return;
+        const rows = r.data.vehicles;
+        if (requestId === requestIdRef.current) {
           setFleetData(rows.map((f) => ({
-            vehicle:    f.registration ?? f.vehicle ?? '',
-            trips:      f.trips ?? 0,
-            distance:   Math.round(f.total_distance_km ?? f.distance ?? 0),
-            avg_speed:  Math.round(f.avg_speed_kmh ?? f.avg_speed ?? 0),
-            fuel_used:  Math.round(f.fuel_used_liters ?? f.fuel_used ?? 0),
-            efficiency: f.efficiency_grade ?? f.efficiency ?? 'B',
+            vehicle:    f.registration,
+            trips:      f.trips,
+            distance:   Math.round(f.total_distance_km),
+            avg_speed:  Math.round(f.avg_speed_kmh),
+            fuel_used:  Math.round(f.fuel_used_liters),
+            efficiency: f.efficiency_grade,
           })));
         }
-        const t = r.data?.totals;
+        const t = r.data.totals;
         if (t) {
           setFleetTotals({
             trips:    t.trips    ?? 0,
@@ -171,7 +133,7 @@ export default function ReportsPage() {
             fuel:     Math.round(t.fuel_liters ?? 0),
           });
         }
-        const s = r.data?.summary;
+        const s = r.data.summary;
         if (s) {
           setApiSummary({
             peakToday:   Math.round(s.peak_today_pct ?? 0),
@@ -180,9 +142,8 @@ export default function ReportsPage() {
             weekAvg:     Math.round(s.week_avg_pct   ?? 0),
           });
         }
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const rd: any = r.data;
-        if (rd?.vs_yesterday != null || rd?.vs_last_week != null) {
+        const rd = r.data;
+        if (rd.vs_yesterday != null || rd.vs_last_week != null) {
           setApiComparison({
             vsYesterday:    String(rd.vs_yesterday   ?? '+0.0%'),
             vsLastWeek:     String(rd.vs_last_week   ?? '-0.0%'),
@@ -191,17 +152,31 @@ export default function ReportsPage() {
           });
         }
       }
-    } catch { /* use stubs */ } finally {
-      setLoading(false);
+    } catch (error) {
+      if (requestId === requestIdRef.current) {
+        const timedOut = error instanceof Error && error.message.toLowerCase().includes('timeout');
+        setReportError(timedOut ? 'Report request exceeded 4 seconds.' : 'Unable to load this report.');
+      }
+    } finally {
+      if (requestId === requestIdRef.current) setLoading(false);
     }
   }, [tab, location]);
   // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { void loadReport(); }, [loadReport]);
+  useEffect(() => {
+    // Defer schedule list so it doesn't contend with the main report fetch / Fast Refresh
+    const t = window.setTimeout(() => {
+      void reportsApi.scheduled().then((res) => {
+        setSchedules(res.data.reports);
+      }).catch(() => {});
+    }, 600);
+    return () => clearTimeout(t);
+  }, []);
 
-  const peakCong = apiSummary?.peakToday   ?? Math.max(...dailyData.map((d) => d.congestion));
-  const avgCong  = apiSummary?.avgToday    ?? Math.round(dailyData.reduce((a, d) => a + d.congestion, 0) / dailyData.length);
+  const peakCong = apiSummary?.peakToday   ?? (dailyData.length ? Math.max(...dailyData.map((d) => d.congestion)) : 0);
+  const avgCong  = apiSummary?.avgToday    ?? (dailyData.length ? Math.round(dailyData.reduce((a, d) => a + d.congestion, 0) / dailyData.length) : 0);
   const totalVol = apiSummary?.totalVolume ?? dailyData.reduce((a, d) => a + d.volume, 0);
-  const weekAvg  = apiSummary?.weekAvg     ?? Math.round(weeklyData.reduce((a, d) => a + d.avg_cong, 0) / weeklyData.length);
+  const weekAvg  = apiSummary?.weekAvg     ?? (weeklyData.length ? Math.round(weeklyData.reduce((a, d) => a + d.avg_cong, 0) / weeklyData.length) : 0);
 
   return (
     <div className="space-y-5" style={{ maxWidth: 1020 }}>
@@ -259,6 +234,28 @@ export default function ReportsPage() {
             <Download size={13} /> Export CSV
           </button>
         </div>
+      </div>
+      {reportError && (
+        <div role="alert" style={{ padding: '10px 14px', borderRadius: 10, color: '#b91c1c', background: '#fef2f2', border: '1px solid #fecaca', fontSize: 12 }}>
+          {reportError}
+        </div>
+      )}
+      <div className="neon-card" style={{ padding: 12, display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+        <span style={{ fontSize: 12, color: '#64748b' }}>Scheduled reports: {schedules.length}</span>
+        <span style={{ display: 'flex', gap: 8 }}>
+          <button
+            onClick={() => void reportsApi.schedule({
+              name: `${location} daily summary`,
+              report_type: 'daily_summary',
+              location,
+              schedule: 'daily',
+            }).then(() => reportsApi.scheduled()).then((res) => setSchedules(res.data.reports))}
+            style={{ fontSize: 11, color: '#3b82f6' }}
+          >
+            Schedule daily
+          </button>
+          {schedules[0] && <button onClick={() => void reportsApi.deleteSchedule(schedules[0].id).then(() => setSchedules((items) => items.slice(1)))} style={{ fontSize: 11, color: '#ef4444' }}>Delete schedule</button>}
+        </span>
       </div>
 
       {/* ── Daily tab ────────────────────────────────────── */}

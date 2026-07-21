@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { Truck, Car, Bus, Bike, Plus, Trash2, UserCheck, MapPin, Zap, Activity, Navigation, CheckCircle2, X } from 'lucide-react';
-import api from '@/lib/api';
+import { fleetApi } from '@/lib/api';
 
 type VehicleType = 'car' | 'truck' | 'bus' | 'bike' | 'van';
 interface Vehicle {
@@ -54,12 +54,14 @@ export default function FleetPage() {
   const [driver,    setDriver]    = useState('');
   const [saving,      setSaving]      = useState(false);
   const [lastUpdated, setLastUpdated] = useState('');
+  const [behaviorLeaderboard, setBehaviorLeaderboard] = useState<unknown>(null);
 
   const fetchData = useCallback(async () => {
     try {
-      const r = await api.get(`/fleet/${ORG_ID}/live`);
+      const [r, vehiclesRes, leaderboardRes] = await Promise.all([fleetApi.live(ORG_ID), fleetApi.vehicles(ORG_ID), fleetApi.behaviorLeaderboard(ORG_ID)]);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const raw: any[] = r.data?.vehicles ?? r.data?.data ?? [];
+      const raw: any[] = r.data?.vehicles ?? vehiclesRes.data?.vehicles ?? vehiclesRes.data?.data ?? r.data?.data ?? [];
+      setBehaviorLeaderboard(leaderboardRes.data);
       if (raw.length) {
         setVehicles(raw.map((v) => {
           // congestion_level is "low" | "medium" | "high" — map to numeric score
@@ -102,7 +104,7 @@ export default function FleetPage() {
   useEffect(() => { void fetchData(); }, [fetchData]);
   // Auto-refresh every 15 seconds
   useEffect(() => {
-    const t = setInterval(() => void fetchData(), 15_000);
+    const t = setInterval(() => void fetchData(), 45_000);
     return () => clearInterval(t);
   }, [fetchData]);
 
@@ -110,7 +112,7 @@ export default function FleetPage() {
     if (!plate.trim() || !driver.trim()) return;
     setSaving(true);
     const newV: Vehicle = { id: Date.now().toString(), name: plate, plate, type: vtype, driver_name: driver, driver_id: Date.now().toString(), location: 'N/A', speed_kmh: 0, congestion_score: 0, congestion_level: 'low', status: 'idle', fuel_pct: 100, last_seen: new Date().toISOString() };
-    try { await api.post(`/fleet/${ORG_ID}/vehicles`, { plate, type: vtype, driver_name: driver }); } catch { /* ok */ }
+    try { await fleetApi.createVehicle(ORG_ID, { plate, type: vtype, driver_name: driver }); } catch { /* ok */ }
     setVehicles((p) => [...p, newV]);
     setSuccess(`Vehicle ${plate} added`);
     setPlate(''); setDriver(''); setShowForm(false); setSaving(false);
@@ -118,7 +120,7 @@ export default function FleetPage() {
   };
 
   const removeVehicle = async (id: string) => {
-    try { await api.delete(`/fleet/${ORG_ID}/vehicles/${id}`); } catch { /* ok */ }
+    try { await fleetApi.removeVehicle(ORG_ID, id); } catch { /* ok */ }
     setVehicles((p) => p.filter((v) => v.id !== id));
   };
 
@@ -234,6 +236,13 @@ export default function FleetPage() {
                 <UserCheck size={12} color="#9ca3af" />
                 <span style={{ fontSize: 12, color: '#374151', fontWeight: 600 }}>{v.driver_name}</span>
               </div>
+              <div style={{ display: 'flex', gap: 8, marginBottom: 10 }}>
+                <button onClick={() => void fleetApi.assign(ORG_ID, v.id, { driver_id: v.driver_id })} style={{ fontSize: 10, color: '#3b82f6' }}>Assign</button>
+                <button onClick={() => void fleetApi.unassign(ORG_ID, v.id)} style={{ fontSize: 10, color: '#ef4444' }}>Unassign</button>
+                <button onClick={() => void fleetApi.updateVehicle(ORG_ID, v.id, { status: v.status })} style={{ fontSize: 10, color: '#64748b' }}>Update</button>
+                <button onClick={() => void fleetApi.logBehavior(ORG_ID, { vehicle_id: v.id, event: 'viewed' })} style={{ fontSize: 10, color: '#64748b' }}>Log behavior</button>
+                <button onClick={() => void fleetApi.behaviorForVehicle(ORG_ID, v.id)} style={{ fontSize: 10, color: '#64748b' }}>Events</button>
+              </div>
 
               {/* Location */}
               <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 12 }}>
@@ -295,6 +304,11 @@ export default function FleetPage() {
           <span className="pulse-dot" style={{ width: 7, height: 7, borderRadius: '50%', background: '#ef4444', display: 'inline-block', flexShrink: 0 }} />
           <strong>{offline} vehicle{offline > 1 ? 's' : ''}</strong>&nbsp;offline — last check-in &gt; 1 hour ago.
         </div>
+      )}
+      {behaviorLeaderboard != null && (
+        <pre className="neon-card" style={{ padding: 12, margin: 0, maxHeight: 100, overflow: 'auto', fontSize: 10, color: '#64748b' }}>
+          {JSON.stringify(behaviorLeaderboard, null, 2)}
+        </pre>
       )}
     </div>
   );

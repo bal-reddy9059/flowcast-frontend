@@ -1,8 +1,8 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
-import { Bell, CheckCheck, Trash2, AlertCircle, Info, Zap } from 'lucide-react';
-import api from '@/lib/api';
+import { Bell, CheckCheck, Trash2, AlertCircle, Info, Zap, RefreshCw } from 'lucide-react';
+import { notificationApi } from '@/lib/api';
 import { formatRelativeTime } from '@/lib/utils';
 import { useNotifications } from '@/contexts/NotificationContext';
 
@@ -16,13 +16,35 @@ interface Notification {
   created_at: string;
 }
 
-const STUBS: Notification[] = [
-  { id: '1', title: 'Critical Congestion Alert', message: 'Mumbai-Pune Expressway at 95% capacity. Major delay expected.', type: 'congestion_alert', severity: 'critical', is_read: false, created_at: new Date(Date.now() - 3 * 60000).toISOString() },
-  { id: '2', title: 'Departure Reminder', message: 'Your morning commute (Miyapur → Hitech City) departs in 15 minutes.', type: 'departure_alert', severity: 'medium', is_read: false, created_at: new Date(Date.now() - 15 * 60000).toISOString() },
-  { id: '3', title: 'Route Optimized', message: 'Alternative route saved 12 minutes on Outer Ring Road corridor.', type: 'system', severity: 'low', is_read: true, created_at: new Date(Date.now() - 45 * 60000).toISOString() },
-  { id: '4', title: 'New Incident Reported', message: 'Signal Malfunction at Connaught Place, New Delhi — Medium severity.', type: 'congestion_alert', severity: 'medium', is_read: false, created_at: new Date(Date.now() - 120 * 60000).toISOString() },
-  { id: '5', title: 'System Maintenance', message: 'Scheduled maintenance window tonight 02:00–04:00 IST.', type: 'system', severity: 'low', is_read: true, created_at: new Date(Date.now() - 3 * 3600000).toISOString() },
-];
+function mapRow(n: Record<string, unknown>, i: number): Notification {
+  return {
+    id: String(n.id ?? n.notification_id ?? `n-${i}`),
+    title: String(n.title ?? n.subject ?? 'Notification'),
+    message: String(n.message ?? n.body ?? n.content ?? ''),
+    type: String(n.type ?? n.notification_type ?? 'system'),
+    severity: String(n.severity ?? n.level ?? 'low'),
+    is_read: Boolean(n.is_read ?? n.read ?? n.read_at),
+    created_at: String(n.created_at ?? n.timestamp ?? n.sent_at ?? new Date().toISOString()),
+  };
+}
+
+function normalizeList(data: unknown): Notification[] {
+  if (Array.isArray(data)) return data.map((item, i) => mapRow((item ?? {}) as Record<string, unknown>, i));
+  if (!data || typeof data !== 'object') return [];
+  const obj = data as Record<string, unknown>;
+  // Unwrap nested envelopes: { data: { notifications } } or { notifications }
+  const inner = (obj.data && typeof obj.data === 'object' && !Array.isArray(obj.data)
+    ? obj.data
+    : obj) as Record<string, unknown>;
+  const raw = inner.notifications ?? inner.items ?? inner.history ?? inner.results ?? (Array.isArray(obj.data) ? obj.data : null);
+  if (!Array.isArray(raw)) return [];
+  return raw.map((item, i) => mapRow((item ?? {}) as Record<string, unknown>, i));
+}
+
+function apiError(e: unknown) {
+  const err = e as { response?: { data?: { error?: string; detail?: string } }; message?: string };
+  return err.response?.data?.error || err.response?.data?.detail || err.message || 'Could not load notifications';
+}
 
 function notifIcon(type: string, severity: string) {
   if (severity === 'critical' || severity === 'high') return <AlertCircle size={18} style={{ color: '#dc2626' }} />;
@@ -44,69 +66,175 @@ function badgeClass(severity: string) {
 
 export default function NotificationsPage() {
   const { decrementUnread, resetUnread } = useNotifications();
-  const [notifications, setNotifications] = useState<Notification[]>(STUBS);
-  const [filter, setFilter] = useState<'all' | 'unread'>('all');
-  const [stats, setStats] = useState({ total: 5, unread: 3, unread_critical: 1 });
+  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [history, setHistory] = useState<Notification[]>([]);
+  const [filter, setFilter] = useState<'all' | 'unread' | 'history'>('all');
+  const [stats, setStats] = useState({ total: 0, unread: 0, unread_critical: 0 });
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [busy, setBusy] = useState(false);
 
   const fetchNotifs = useCallback(async () => {
+    setError('');
+    setLoading(true);
     try {
-      const [listRes, statsRes] = await Promise.all([
-        api.get('/notifications'),
-        api.get('/notifications/stats'),
+      const [listRes, statsRes, historyRes] = await Promise.allSettled([
+        notificationApi.list({ limit: 50 }),
+        notificationApi.stats(),
+        notificationApi.history({ limit: 50 }),
       ]);
-      if (listRes.data?.notifications?.length) setNotifications(listRes.data.notifications);
-      if (statsRes.data) setStats(statsRes.data);
-    } catch { /* use stubs */ }
+
+      if (listRes.status === 'rejected' && historyRes.status === 'rejected') {
+        throw listRes.reason;
+      }
+
+      const list = listRes.status === 'fulfilled' ? normalizeList(listRes.value.data) : [];
+      const hist = historyRes.status === 'fulfilled' ? normalizeList(historyRes.value.data) : [];
+      setNotifications(list);
+      setHistory(hist);
+
+      if (statsRes.status === 'fulfilled') {
+        const s = statsRes.value.data ?? {};
+        const unread = Number(s.unread ?? s.unread_count ?? (listRes.status === 'fulfilled' ? listRes.value.data.unread : undefined) ?? list.filter((n) => !n.is_read).length);
+        const total = Number(s.total ?? s.total_notifications ?? (listRes.status === 'fulfilled' ? listRes.value.data.total : undefined) ?? list.length);
+        const unreadCritical = Number(s.unread_critical ?? 0);
+        setStats({ total, unread, unread_critical: unreadCritical });
+      } else if (listRes.status === 'fulfilled') {
+        setStats({
+          total: Number(listRes.value.data.total ?? list.length),
+          unread: Number(listRes.value.data.unread ?? list.filter((n) => !n.is_read).length),
+          unread_critical: Number(listRes.value.data.unread_critical ?? 0),
+        });
+      }
+
+      if (listRes.status === 'rejected') {
+        setError(apiError(listRes.reason));
+      }
+    } catch (e) {
+      setError(apiError(e));
+      setNotifications([]);
+    } finally {
+      setLoading(false);
+    }
   }, []);
 
-  // eslint-disable-next-line react-hooks/set-state-in-effect
   useEffect(() => { void fetchNotifs(); }, [fetchNotifs]);
 
   const markRead = async (id: string) => {
-    try { await api.put(`/notifications/${id}/read`); } catch { /* ignore */ }
-    setNotifications((prev) => prev.map((n) => n.id === id ? { ...n, is_read: true } : n));
-    setStats((s) => ({ ...s, unread: Math.max(0, s.unread - 1) }));
-    decrementUnread(1);
+    setBusy(true);
+    try {
+      try {
+        await notificationApi.markRead(id);
+      } catch {
+        await notificationApi.markReadPost(id);
+      }
+      setNotifications((prev) => prev.map((n) => (n.id === id ? { ...n, is_read: true } : n)));
+      setStats((s) => ({ ...s, unread: Math.max(0, s.unread - 1) }));
+      decrementUnread(1);
+    } catch (e) {
+      setError(apiError(e));
+    } finally {
+      setBusy(false);
+    }
   };
 
   const markAllRead = async () => {
-    try { await api.put('/notifications/read-all'); } catch { /* ignore */ }
-    setNotifications((prev) => prev.map((n) => ({ ...n, is_read: true })));
-    setStats((s) => ({ ...s, unread: 0 }));
-    resetUnread();
+    setBusy(true);
+    try {
+      try {
+        await notificationApi.markAllRead();
+      } catch {
+        await notificationApi.markAllReadPost();
+      }
+      setNotifications((prev) => prev.map((n) => ({ ...n, is_read: true })));
+      setStats((s) => ({ ...s, unread: 0, unread_critical: 0 }));
+      resetUnread();
+    } catch (e) {
+      setError(apiError(e));
+    } finally {
+      setBusy(false);
+    }
   };
 
   const deleteNotif = async (id: string) => {
-    try { await api.delete(`/notifications/${id}`); } catch { /* ignore */ }
-    setNotifications((prev) => prev.filter((n) => n.id !== id));
+    setBusy(true);
+    try {
+      await notificationApi.delete(id);
+      setNotifications((prev) => prev.filter((n) => n.id !== id));
+      setHistory((prev) => prev.filter((n) => n.id !== id));
+      setStats((s) => ({ ...s, total: Math.max(0, s.total - 1) }));
+    } catch (e) {
+      setError(apiError(e));
+    } finally {
+      setBusy(false);
+    }
   };
 
-  const displayed = filter === 'unread' ? notifications.filter((n) => !n.is_read) : notifications;
+  const sendTest = async () => {
+    setBusy(true);
+    setError('');
+    try {
+      await notificationApi.test();
+      await fetchNotifs();
+    } catch (e) {
+      setError(apiError(e));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const displayed =
+    filter === 'history' ? history :
+    filter === 'unread' ? notifications.filter((n) => !n.is_read) :
+    notifications;
 
   return (
     <div className="slide-up" style={{ maxWidth: 768, display: 'flex', flexDirection: 'column', gap: 20 }}>
-
-      {/* ── Hero Banner ── */}
       <div className="page-hero" style={{ padding: '24px 28px' }}>
-        <div style={{ position: 'relative', zIndex: 1 }} className="flex items-center justify-between">
+        <div style={{ position: 'relative', zIndex: 1 }} className="flex items-center justify-between gap-3 flex-wrap">
           <div>
             <h1 className="gradient-text-neon" style={{ fontSize: 24, fontWeight: 900, letterSpacing: '-0.03em', margin: 0 }}>Notifications</h1>
             <p style={{ fontSize: 13, color: '#94a3b8', marginTop: 4 }}>
-              {stats.unread} unread · {stats.unread_critical} critical
+              {stats.unread} unread · {stats.unread_critical} critical · live API
             </p>
           </div>
-          <button
-            onClick={markAllRead}
-            className="btn-neon"
-            style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 16px', borderRadius: 9, fontSize: 13, fontWeight: 600, cursor: 'pointer' }}
-          >
-            <CheckCheck size={15} />
-            Mark All Read
-          </button>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button
+              onClick={() => void fetchNotifs()}
+              disabled={loading}
+              className="btn-neon"
+              style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 12px', borderRadius: 9, fontSize: 12, fontWeight: 600, cursor: 'pointer' }}
+            >
+              <RefreshCw size={13} style={{ animation: loading ? 'spin 0.8s linear infinite' : 'none' }} />
+              Refresh
+            </button>
+            <button
+              onClick={() => void markAllRead()}
+              disabled={busy}
+              className="btn-neon"
+              style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '8px 16px', borderRadius: 9, fontSize: 13, fontWeight: 600, cursor: 'pointer' }}
+            >
+              <CheckCheck size={15} />
+              Mark All Read
+            </button>
+            <button
+              onClick={() => void sendTest()}
+              disabled={busy}
+              className="btn-gradient"
+              style={{ padding: '8px 12px', borderRadius: 9, fontSize: 12, fontWeight: 600, cursor: 'pointer' }}
+            >
+              Test notification
+            </button>
+          </div>
         </div>
       </div>
 
-      {/* Stats row */}
+      {error && (
+        <div style={{ padding: '12px 14px', borderRadius: 12, background: '#fef2f2', border: '1px solid #fecaca', color: '#b91c1c', fontSize: 13 }}>
+          {error}
+        </div>
+      )}
+
       <div className="stagger" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
         {[
           { label: 'Total', value: stats.total, glowClass: 'icon-glow-blue', color: '#3b82f6' },
@@ -125,9 +253,8 @@ export default function NotificationsPage() {
         ))}
       </div>
 
-      {/* Filter tabs */}
       <div style={{ display: 'flex', gap: 4, padding: 4, borderRadius: 12, background: 'rgba(59,130,246,0.06)', width: 'fit-content', border: '1px solid rgba(59,130,246,0.15)' }}>
-        {(['all', 'unread'] as const).map((f) => (
+        {(['all', 'unread', 'history'] as const).map((f) => (
           <button
             key={f}
             onClick={() => setFilter(f)}
@@ -140,19 +267,27 @@ export default function NotificationsPage() {
               textTransform: 'capitalize',
             }}
           >
-            {f}
+            {f}{f === 'history' ? ` (${history.length})` : ''}
           </button>
         ))}
       </div>
 
-      {/* Notification list */}
       <div className="stagger" style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-        {displayed.length === 0 ? (
+        {loading ? (
+          [1, 2, 3].map((n) => <div key={n} className="skeleton" style={{ height: 88, borderRadius: 14 }} />)
+        ) : displayed.length === 0 ? (
           <div className="neon-card" style={{ padding: '60px 24px', textAlign: 'center', display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 12 }}>
             <div className="icon-glow icon-glow-blue" style={{ width: 56, height: 56, borderRadius: 16 }}>
               <Bell size={26} color="#3b82f6" />
             </div>
-            <p style={{ fontWeight: 600, color: '#9ca3af', margin: 0, fontSize: 14 }}>No notifications</p>
+            <p style={{ fontWeight: 600, color: '#9ca3af', margin: 0, fontSize: 14 }}>
+              {error ? 'Notifications unavailable — check login / backend' : 'No notifications'}
+            </p>
+            {!error && (
+              <button onClick={() => void sendTest()} className="btn-gradient" style={{ padding: '8px 16px', borderRadius: 9, fontSize: 13, fontWeight: 700 }}>
+                Send test notification
+              </button>
+            )}
           </div>
         ) : (
           displayed.map((notif) => (
@@ -182,24 +317,26 @@ export default function NotificationsPage() {
                   <p style={{ fontSize: 13, color: '#6b7280', margin: '0 0 8px' }}>{notif.message}</p>
                   <div className="flex items-center justify-between">
                     <span style={{ fontSize: 11.5, color: '#9ca3af' }}>{formatRelativeTime(notif.created_at)}</span>
-                    <div style={{ display: 'flex', gap: 8 }}>
-                      {!notif.is_read && (
+                    {filter !== 'history' && (
+                      <div style={{ display: 'flex', gap: 8 }}>
+                        {!notif.is_read && (
+                          <button
+                            disabled={busy}
+                            onClick={() => void markRead(notif.id)}
+                            style={{ fontSize: 12, padding: '3px 10px', borderRadius: 7, color: '#3b82f6', background: 'rgba(59,130,246,0.08)', border: '1px solid rgba(59,130,246,0.2)', cursor: 'pointer', fontWeight: 600 }}
+                          >
+                            Mark read
+                          </button>
+                        )}
                         <button
-                          onClick={() => markRead(notif.id)}
-                          style={{ fontSize: 12, padding: '3px 10px', borderRadius: 7, color: '#3b82f6', background: 'rgba(59,130,246,0.08)', border: '1px solid rgba(59,130,246,0.2)', cursor: 'pointer', fontWeight: 600, transition: 'all 0.15s' }}
+                          disabled={busy}
+                          onClick={() => void deleteNotif(notif.id)}
+                          style={{ padding: '3px 7px', borderRadius: 7, color: '#d1d5db', background: 'transparent', border: 'none', cursor: 'pointer', display: 'flex' }}
                         >
-                          Mark read
+                          <Trash2 size={13} />
                         </button>
-                      )}
-                      <button
-                        onClick={() => deleteNotif(notif.id)}
-                        style={{ padding: '3px 7px', borderRadius: 7, color: '#d1d5db', background: 'transparent', border: 'none', cursor: 'pointer', display: 'flex', transition: 'color 0.15s' }}
-                        onMouseEnter={e => { e.currentTarget.style.color = '#ef4444'; }}
-                        onMouseLeave={e => { e.currentTarget.style.color = '#d1d5db'; }}
-                      >
-                        <Trash2 size={13} />
-                      </button>
-                    </div>
+                      </div>
+                    )}
                   </div>
                 </div>
               </div>
@@ -207,6 +344,8 @@ export default function NotificationsPage() {
           ))
         )}
       </div>
+
+      <style>{`@keyframes spin { to { transform: rotate(360deg); } }`}</style>
     </div>
   );
 }

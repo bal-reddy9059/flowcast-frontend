@@ -8,7 +8,7 @@ import React, {
   useRef,
   useCallback,
 } from 'react';
-import { notificationApi, wsBase } from '@/lib/api';
+import { notificationApi, wsBase, isApiCircuitOpen } from '@/lib/api';
 import { useAuth } from '@/contexts/AuthContext';
 
 interface NotificationContextType {
@@ -29,77 +29,142 @@ export function useNotifications() {
   return useContext(NotificationContext);
 }
 
-// ─── Provider ────────────────────────────────────────────────────
+function userIdFromJwt(token: string | null): string | null {
+  if (!token) return null;
+  try {
+    const payload = JSON.parse(atob(token.split('.')[1]!.replace(/-/g, '+').replace(/_/g, '/')));
+    const id = payload.sub ?? payload.user_id ?? payload.id ?? payload.uid;
+    return id != null ? String(id) : null;
+  } catch {
+    return null;
+  }
+}
+
 export function NotificationProvider({ children }: { children: React.ReactNode }) {
-  const { user, isAuthenticated } = useAuth();
+  const { user, token, isAuthenticated } = useAuth();
   const [unreadCount, setUnreadCount] = useState(0);
   const [isConnected, setIsConnected] = useState(false);
-  const wsRef        = useRef<WebSocket | null>(null);
-  const retryRef     = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const wsRef = useRef<WebSocket | null>(null);
+  const retryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const connectWSRef = useRef<() => void>(() => {});
-  const mountedRef   = useRef(true);
+  const mountedRef = useRef(true);
+  const attemptRef = useRef(0);
 
-  // ── Fetch initial unread count ────────────────────────────────
+  const userId = user?.id ?? userIdFromJwt(token);
+
   const fetchStats = useCallback(async () => {
+    if (isApiCircuitOpen()) return;
     try {
       const res = await notificationApi.stats();
-      if (typeof res.data?.unread === 'number') {
-        setUnreadCount(res.data.unread);
+      if (!mountedRef.current) return;
+      const unread = res.data?.unread ?? res.data?.unread_count;
+      if (typeof unread === 'number' && Number.isFinite(unread)) {
+        setUnreadCount(Math.max(0, Math.min(999, Math.floor(unread))));
       }
-    } catch { /* backend unavailable — keep count at 0 */ }
+    } catch {
+      /* optional probe; Live badge is driven by WebSocket only */
+    }
   }, []);
 
-  // ── Open user notification WebSocket ─────────────────────────
-  const connectWS = useCallback(() => {
-    if (!user?.id) return;
+  const scheduleReconnect = useCallback(() => {
+    if (!mountedRef.current) return;
     if (retryRef.current) clearTimeout(retryRef.current);
+    attemptRef.current += 1;
+    const delay = Math.min(45000, 2000 * Math.pow(1.8, Math.min(attemptRef.current, 8)));
+    retryRef.current = setTimeout(() => connectWSRef.current(), delay);
+  }, []);
 
-    const url = `${wsBase()}/notifications/ws/${user.id}`;
-    const ws  = new WebSocket(url);
+  const connectWS = useCallback(() => {
+    if (!mountedRef.current || !userId) return;
+    if (retryRef.current) {
+      clearTimeout(retryRef.current);
+      retryRef.current = null;
+    }
+
+    if (wsRef.current) {
+      wsRef.current.onopen = null;
+      wsRef.current.onclose = null;
+      wsRef.current.onerror = null;
+      wsRef.current.onmessage = null;
+      try { wsRef.current.close(); } catch { /* ignore */ }
+      wsRef.current = null;
+    }
+
+    const base = wsBase().replace(/\/$/, '');
+    const qs = token ? `?token=${encodeURIComponent(token)}` : '';
+    const url = `${base}/notifications/ws/${encodeURIComponent(userId)}${qs}`;
+
+    let ws: WebSocket;
+    try {
+      ws = new WebSocket(url);
+    } catch {
+      scheduleReconnect();
+      return;
+    }
     wsRef.current = ws;
 
-    ws.onopen  = () => setIsConnected(true);
-    ws.onclose = () => {
-      setIsConnected(false);
-      // Only reconnect if the provider is still mounted
-      if (mountedRef.current) {
-        retryRef.current = setTimeout(() => connectWSRef.current(), 5000);
-      }
+    ws.onopen = () => {
+      attemptRef.current = 0;
+      if (mountedRef.current) setIsConnected(true);
+      // Re-sync count from API whenever the socket connects (avoids 99+ drift)
+      void fetchStats();
     };
-    ws.onerror = () => ws.close();
+
+    ws.onclose = () => {
+      if (!mountedRef.current) return;
+      setIsConnected(false);
+      scheduleReconnect();
+    };
+
+    ws.onerror = () => {
+      try { ws.close(); } catch { /* ignore */ }
+    };
 
     ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
-        // Backend pushes notification objects or { type, data } envelopes
-        if (
+        if (data?.type === 'ping' || data?.type === 'pong' || data?.type === 'connected') {
+          if (data?.type === 'ping') ws.send(JSON.stringify({ type: 'pong' }));
+          return;
+        }
+        // Only count real notification payloads — not every WS frame
+        const isNotif =
           data?.type === 'notification' ||
-          data?.title ||           // bare notification object
-          data?.notification_type  // alternate field name the backend uses
-        ) {
-          setUnreadCount((n) => n + 1);
+          (typeof data?.id === 'string' && (data?.title || data?.message || data?.notification_type));
+        if (isNotif) {
+          setUnreadCount((n) => Math.min(999, n + 1));
         }
       } catch { /* ignore malformed frames */ }
     };
-  }, [user]);
+  }, [userId, token, scheduleReconnect, fetchStats]);
 
-  useEffect(() => { connectWSRef.current = connectWS; });
-
-  // ── Lifecycle ────────────────────────────────────────────────
   useEffect(() => {
-    if (!isAuthenticated || !user?.id) return;
+    connectWSRef.current = connectWS;
+  });
 
-    // eslint-disable-next-line react-hooks/set-state-in-effect
+  useEffect(() => {
+    mountedRef.current = true;
+
+    if (!isAuthenticated || !userId) {
+      setIsConnected(false);
+      return;
+    }
+
+    // One lightweight stats fetch on mount — no repeating HTTP health loop
     void fetchStats();
     connectWS();
 
     return () => {
       mountedRef.current = false;
       if (retryRef.current) clearTimeout(retryRef.current);
-      wsRef.current?.close();
-      setIsConnected(false);
+      retryRef.current = null;
+      if (wsRef.current) {
+        wsRef.current.onclose = null;
+        try { wsRef.current.close(); } catch { /* ignore */ }
+        wsRef.current = null;
+      }
     };
-  }, [isAuthenticated, user?.id, fetchStats, connectWS]);
+  }, [isAuthenticated, userId, fetchStats, connectWS]);
 
   const decrementUnread = useCallback((by = 1) => {
     setUnreadCount((n) => Math.max(0, n - by));

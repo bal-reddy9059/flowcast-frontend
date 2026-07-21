@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect, useCallback } from 'react';
+import { useRouter } from 'next/navigation';
 import {
   AlertTriangle, Activity, MapPin, Wifi,
   TrendingUp, TrendingDown, Minus,
@@ -9,7 +10,7 @@ import {
 import {
   AreaChart, Area, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer,
 } from 'recharts';
-import api from '@/lib/api';
+import api, { analyticsApi } from '@/lib/api';
 import { formatRelativeTime, generateTrendData } from '@/lib/utils';
 
 /* ─── Sparkline ──────────────────────────────────────────────────── */
@@ -63,6 +64,15 @@ interface Hotspot {
   congestion: string;
   pct: number;
   trend: 'up' | 'down' | 'stable';
+}
+
+interface HotspotMeta {
+  source: 'leaderboard' | 'analytics snapshot' | 'India hotspots' | 'none';
+  hasData: boolean;
+  usedFallbackWindow: boolean;
+  periodHours: number | null;
+  generatedAt: string | null;
+  totalLocations: number;
 }
 
 /* ─── Stat Card ──────────────────────────────────────────────────── */
@@ -169,9 +179,19 @@ function congestionTrend(level: string): 'up' | 'down' | 'stable' {
 
 /* ─── Page ─────────────────────────────────────────────────────── */
 export default function DashboardPage() {
+  const router = useRouter();
   const [trendData, setTrendData] = useState(generateTrendData());
   const [incidents, setIncidents] = useState<Incident[]>([]);
   const [hotspots, setHotspots]   = useState<Hotspot[]>([]);
+  const [hotspotsLoaded, setHotspotsLoaded] = useState(false);
+  const [hotspotMeta, setHotspotMeta] = useState<HotspotMeta>({
+    source: 'none',
+    hasData: false,
+    usedFallbackWindow: false,
+    periodHours: null,
+    generatedAt: null,
+    totalLocations: 0,
+  });
   const [stats, setStats] = useState({ incidents: 0, healthScore: 0, districts: 766, latency: 17 });
   const [isLive, setIsLive] = useState(true);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -186,89 +206,220 @@ export default function DashboardPage() {
   const fetchData = useCallback(async () => {
     setIsRefreshing(true);
     try {
-      // ── 1. Summary stats ─────────────────────────────────────────
-      const [snapshotRes, sourcesRes] = await Promise.all([
-        api.get('/analytics/snapshot'),
-        api.get('/traffic/sources'),
+      const [snapshotRes, sourcesRes, incidentRes, leaderboardRes, trendRes, healthRes] = await Promise.allSettled([
+        analyticsApi.snapshot({ hours: 1 }),
+        api.get('/traffic/sources', { timeout: 6000 }),
+        api.get('/traffic/incidents', {
+          timeout: 6000,
+          params: { active_only: true, limit: 20, offset: 0 },
+        }),
+        api.get('/traffic/leaderboard', {
+          timeout: 6000,
+          params: { order: 'worst', top: 6, hours: 1 },
+        }),
+        analyticsApi.trends(6),
+        analyticsApi.health(),
       ]);
-      if (snapshotRes.data) {
+
+      if (snapshotRes.status === 'fulfilled' && snapshotRes.value.data) {
+        const d = snapshotRes.value.data;
         setStats((p) => ({
           ...p,
-          incidents:   snapshotRes.data.active_incidents   ?? p.incidents,
-          healthScore: snapshotRes.data.city_health_score  ?? p.healthScore,
-          districts:   snapshotRes.data.monitored_districts ?? p.districts,
+          incidents:   d.active_incidents ?? p.incidents,
+          healthScore: healthRes.status === 'fulfilled' && healthRes.value.data?.score != null
+            ? Math.round(Number(healthRes.value.data.score))
+            : (d.city_health_score ?? p.healthScore),
+          districts:   d.total_locations_observed ?? d.monitored_districts ?? p.districts,
         }));
+      } else if (healthRes.status === 'fulfilled' && healthRes.value.data?.score != null) {
+        setStats((p) => ({ ...p, healthScore: Math.round(Number(healthRes.value.data.score)) }));
       }
-      if (sourcesRes.data?.active_source) {
-        setDataSource(sourcesRes.data.active_source);
-      }
-
-      // ── 2. Live incidents (backend returns plain array) ───────────
-      const incidentRes = await api.get('/traffic/incidents?active_only=true');
-      const rawInc = Array.isArray(incidentRes.data) ? incidentRes.data : [];
-      if (rawInc.length) {
-        setIncidents(
-          rawInc.slice(0, 3).map((inc: {
-            id: number;
-            incident_type: string;
-            description?: string;
-            location: string;
-            severity: string;
-            reported_at: string;
-          }) => ({
-            id:          inc.id,
-            title:       toTitleCase(inc.incident_type || 'Incident'),
-            location:    inc.location,
-            severity:    inc.severity || 'low',
-            reported_at: inc.reported_at,
-          }))
-        );
+      if (sourcesRes.status === 'fulfilled') {
+        const srcBody = sourcesRes.value.data as { data?: { active_source?: string }; active_source?: string };
+        const active = srcBody?.data?.active_source ?? srcBody?.active_source;
+        if (active) setDataSource(active);
       }
 
-      // ── 3. Real congestion hotspots from leaderboard ─────────────
-      const leaderboardRes = await api.get('/traffic/leaderboard?order=worst&top=6&hours=1');
-      const rows = leaderboardRes.data?.leaderboard ?? [];
-      if (rows.length) {
+      if (incidentRes.status === 'fulfilled') {
+        const rawBody = incidentRes.value.data as unknown;
+        const unwrapped = (rawBody as { data?: unknown })?.data ?? rawBody;
+        const rawInc = Array.isArray(unwrapped)
+          ? unwrapped
+          : Array.isArray((unwrapped as { incidents?: unknown[] })?.incidents)
+            ? (unwrapped as { incidents: unknown[] }).incidents
+            : [];
+        if (rawInc.length) {
+          setIncidents(
+            rawInc.slice(0, 3).map((inc: {
+              id: number;
+              incident_type: string;
+              description?: string;
+              location: string;
+              severity: string;
+              reported_at: string;
+            }) => ({
+              id:          inc.id,
+              title:       toTitleCase(inc.incident_type || 'Incident'),
+              location:    inc.location,
+              severity:    inc.severity || 'low',
+              reported_at: inc.reported_at,
+            }))
+          );
+        }
+      }
+
+      try {
+        type HotspotRow = {
+          location?: string;
+          city?: string;
+          state?: string;
+          congestion_level?: string;
+          congestion_score?: number | null;
+          avg_speed_kmh?: number | null;
+          avg_speed?: number | null;
+          free_flow_speed_kmh?: number | null;
+          avg_vehicle_count?: number | null;
+          vehicle_count?: number | null;
+          record_count?: number | null;
+        };
+
+        // Prefer the leaderboard, then the snapshot, then the wider India endpoint.
+        // Previously snapshot fallback only ran when leaderboard fulfilled, so a
+        // transient leaderboard failure permanently left this table empty.
+        let rows: HotspotRow[] = [];
+        let meta: HotspotMeta = {
+          source: 'none',
+          hasData: false,
+          usedFallbackWindow: false,
+          periodHours: null,
+          generatedAt: null,
+          totalLocations: 0,
+        };
+        if (leaderboardRes.status === 'fulfilled') {
+          const body = leaderboardRes.value.data as {
+            timestamp?: string;
+            data?: {
+              leaderboard?: HotspotRow[];
+              has_data?: boolean;
+              used_fallback_window?: boolean;
+              period_hours?: number;
+              generated_at?: string;
+              total_locations_observed?: number;
+            };
+            leaderboard?: HotspotRow[];
+          };
+          const data = body?.data;
+          const leaderboard = data?.leaderboard ?? body?.leaderboard ?? [];
+          // Respect an explicit no-data status even if a stale array is present.
+          rows = data?.has_data === false ? [] : leaderboard;
+          if (rows.length) {
+            meta = {
+              source: 'leaderboard',
+              hasData: true,
+              usedFallbackWindow: data?.used_fallback_window === true,
+              periodHours: data?.period_hours ?? null,
+              generatedAt: data?.generated_at ?? body?.timestamp ?? null,
+              totalLocations: data?.total_locations_observed ?? rows.length,
+            };
+          }
+        }
+        if (!rows.length && snapshotRes.status === 'fulfilled') {
+          rows = (snapshotRes.value.data?.locations ?? []) as HotspotRow[];
+          if (rows.length) {
+            meta = {
+              source: 'analytics snapshot',
+              hasData: true,
+              usedFallbackWindow: false,
+              periodHours: snapshotRes.value.data?.period_hours ?? null,
+              generatedAt: snapshotRes.value.data?.snapshot_time ?? null,
+              totalLocations: snapshotRes.value.data?.total_locations_observed ?? rows.length,
+            };
+          }
+        }
+        if (!rows.length) {
+          try {
+            // This is a broader, more expensive lookup: only call it when both
+            // indexed primary sources are empty.
+            const response = await api.get('/india/hotspots?limit=6', { timeout: 9_000 });
+            const body = response.data as {
+              timestamp?: string;
+              data?: { hotspots?: HotspotRow[]; top_congested?: HotspotRow[] };
+              hotspots?: HotspotRow[];
+              top_congested?: HotspotRow[];
+            };
+            rows =
+              body?.data?.hotspots ??
+              body?.data?.top_congested ??
+              body?.hotspots ??
+              body?.top_congested ??
+              [];
+            if (rows.length) {
+              meta = {
+                source: 'India hotspots',
+                hasData: true,
+                usedFallbackWindow: false,
+                periodHours: null,
+                generatedAt: body?.timestamp ?? null,
+                totalLocations: rows.length,
+              };
+            }
+          } catch {
+            rows = [];
+          }
+        }
+
+        const validRows = rows.filter((row) => typeof row.location === 'string' && row.location.trim().length > 0);
         setHotspots(
-          rows.map((row: {
-            location: string;
-            congestion_level: string;
-            avg_speed_kmh: number;
-            avg_vehicle_count: number;
-          }) => ({
-            city_node:     row.location,
-            state:         `Vehicles: ${Math.round(row.avg_vehicle_count).toLocaleString()} avg`,
-            avg_speed:     60,                           // free-flow baseline
-            current_speed: Math.round(row.avg_speed_kmh || 0),
-            congestion:    toTitleCase(row.congestion_level || 'medium'),
-            pct:           speedToPct(row.avg_speed_kmh || 35),
-            trend:         congestionTrend(row.congestion_level),
-          }))
+          validRows.slice(0, 6).map((row) => {
+            const speed = Number(row.avg_speed_kmh ?? row.avg_speed ?? 0);
+            const freeFlow = Number(row.free_flow_speed_kmh ?? 60);
+            const vehicles = Number(row.avg_vehicle_count ?? row.vehicle_count ?? 0);
+            const level = String(row.congestion_level || 'medium').toLowerCase();
+            return {
+              city_node:     row.location!,
+              state:         row.city && row.state
+                ? `${row.city}, ${row.state}`
+                : vehicles > 0
+                  ? `Vehicles: ${Math.round(vehicles).toLocaleString()} avg`
+                  : `${Math.round(Number(row.record_count ?? 0)).toLocaleString()} observations`,
+              avg_speed:     Math.max(Math.round(freeFlow), Math.round(speed)),
+              current_speed: Math.round(speed),
+              congestion:    toTitleCase(level),
+              pct:           speedToPct(speed || 35),
+              trend:         congestionTrend(level),
+            };
+          })
         );
+        setHotspotMeta({ ...meta, hasData: validRows.length > 0 });
+      } finally {
+        setHotspotsLoaded(true);
+      }
+
+      if (trendRes.status === 'fulfilled' && trendRes.value.data?.data_points) {
+        setTrendData(
+          trendRes.value.data.data_points
+            .filter((p) => p.has_data !== false && p.congestion_level != null)
+            .map((p) => ({
+              time:       `${String(p.hour).padStart(2, '0')}:00`,
+              congestion: Math.round(Number(p.congestion_level) * 100),
+            }))
+        );
+      } else if (trendRes.status === 'rejected') {
+        setTrendData(generateTrendData());
       }
     } catch { /* leave previous state intact */ }
-
-    // ── 4. Congestion trend chart ───────────────────────────────────
-    try {
-      const trendRes = await api.get('/analytics/trends');
-      if (trendRes.data?.data_points) {
-        setTrendData(
-          trendRes.data.data_points.map((p: { hour: number; congestion_level: number }) => ({
-            time:       `${String(p.hour).padStart(2, '0')}:00`,
-            congestion: Math.round(p.congestion_level * 100),
-          }))
-        );
-      }
-    } catch { setTrendData(generateTrendData()); }
     finally { setIsRefreshing(false); }
   }, []);
 
   useEffect(() => {
-    void fetchData();
-    const interval = setInterval(() => {
-      setStats((s) => ({ ...s, latency: Math.floor(Math.random() * 15 + 8) }));
-    }, 5000);
-    return () => clearInterval(interval);
+    // Defer initial state updates out of the effect's synchronous phase.
+    const initial = window.setTimeout(() => void fetchData(), 0);
+    // Retry real data after cold startup and keep the dashboard current.
+    const interval = setInterval(() => void fetchData(), 30_000);
+    return () => {
+      window.clearTimeout(initial);
+      clearInterval(interval);
+    };
   }, [fetchData]);
 
   const sourceLabel: Record<string, string> = {
@@ -283,9 +434,9 @@ export default function DashboardPage() {
 
       {/* ── Gradient hero banner ──────────────────────── */}
       <div className="page-hero">
-        <div style={{ position: 'relative', zIndex: 1, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
-          <div>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8 }}>
+        <div className="stack-mobile" style={{ position: 'relative', zIndex: 1, display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 14, flexWrap: 'wrap' }}>
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 8, flexWrap: 'wrap' }}>
               <span className="pulse-dot" style={{ width: 8, height: 8, borderRadius: '50%', background: '#10b981', boxShadow: '0 0 10px rgba(16,185,129,0.9)', display: 'inline-block' }} />
               <span style={{ fontSize: 11, fontWeight: 700, color: '#34d399', letterSpacing: '0.1em', textTransform: 'uppercase' }}>Live Dashboard</span>
               <span style={{
@@ -305,7 +456,7 @@ export default function DashboardPage() {
             </p>
           </div>
 
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 shrink-0">
             <button
               onClick={fetchData} disabled={isRefreshing}
               style={{
@@ -345,7 +496,7 @@ export default function DashboardPage() {
       </div>
 
       {/* ── KPI cards ─────────────────────────────────── */}
-      <div className="stagger" style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14 }}>
+      <div className="stagger grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3.5">
         <StatCard
           title="Active Incidents" value={stats.incidents > 0 ? String(stats.incidents) : '—'}
           change={stats.incidents > 0 ? `${stats.incidents} active now` : 'Loading…'} changeDir="up" changeGood={false}
@@ -381,7 +532,7 @@ export default function DashboardPage() {
       </div>
 
       {/* ── Charts row ────────────────────────────────── */}
-      <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr', gap: 14 }}>
+      <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)] gap-3.5">
 
         {/* Congestion trend */}
         <div className="neon-card" style={{ padding: '22px 26px' }}>
@@ -505,6 +656,7 @@ export default function DashboardPage() {
               cursor: 'pointer', transition: 'all 0.2s ease',
               boxShadow: '0 0 0 0 rgba(59,130,246,0)',
             }}
+              onClick={() => router.push('/incidents')}
               onMouseEnter={(e) => {
                 e.currentTarget.style.background = 'rgba(59,130,246,0.1)';
                 e.currentTarget.style.boxShadow = '0 0 16px rgba(59,130,246,0.15)';
@@ -526,7 +678,10 @@ export default function DashboardPage() {
           <div>
             <h2 style={{ fontSize: 15, fontWeight: 700, color: '#0f172a' }}>Top Congestion Hotspots</h2>
             <p style={{ fontSize: 12, color: '#94a3b8', marginTop: 2 }}>
-              Real-time velocity data — source: <span style={{ color: dataSource === 'simulation' ? '#f59e0b' : '#10b981', fontWeight: 700 }}>{sourceLabel[dataSource] ?? dataSource}</span>
+              Source: <span style={{ color: hotspotMeta.source === 'leaderboard' ? '#10b981' : '#f59e0b', fontWeight: 700 }}>{hotspotMeta.source}</span>
+              {hotspotMeta.periodHours != null ? ` · ${hotspotMeta.periodHours}h window` : ''}
+              {hotspotMeta.usedFallbackWindow ? ' · fallback window' : ''}
+              {hotspotMeta.generatedAt ? ` · ${new Date(hotspotMeta.generatedAt).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' })} IST` : ''}
             </p>
           </div>
           <div style={{
@@ -534,7 +689,7 @@ export default function DashboardPage() {
             background: 'rgba(59,130,246,0.06)', color: '#3b82f6',
             border: '1px solid rgba(59,130,246,0.15)',
           }}>
-            All India
+            {hotspotMeta.hasData ? `${hotspotMeta.totalLocations} locations` : 'All India'}
           </div>
         </div>
 
@@ -557,7 +712,7 @@ export default function DashboardPage() {
               {hotspots.length === 0 ? (
                 <tr>
                   <td colSpan={6} style={{ padding: '28px', textAlign: 'center', color: '#94a3b8', fontSize: 13 }}>
-                    Loading live traffic hotspots…
+                    {hotspotsLoaded ? 'No hotspot data available' : 'Loading live traffic hotspots…'}
                   </td>
                 </tr>
               ) : hotspots.map((row, i) => {

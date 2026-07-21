@@ -5,7 +5,7 @@ import {
   Key, Plus, Copy, RotateCw, Trash2, CheckCircle2,
   Code, X, AlertTriangle,
 } from 'lucide-react';
-import api from '@/lib/api';
+import { developerApi } from '@/lib/api';
 
 /* ─── Types ──────────────────────────────────────────────────── */
 interface ApiKey {
@@ -86,12 +86,14 @@ export default function DeveloperPage() {
   const [generatedKey, setGeneratedKey] = useState<{ id: string; key: string } | null>(null);
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [revoking, setRevoking] = useState<string | null>(null);
+  const [developerMeta, setDeveloperMeta] = useState<{ scopes?: unknown; status?: unknown }>({});
 
   useEffect(() => {
-    api.get('/developer/keys')
-      .then(r => {
+    Promise.all([developerApi.keys(), developerApi.scopes(), developerApi.status()])
+      .then(([r, scopes, status]) => {
         const raw: unknown[] = Array.isArray(r.data?.keys ?? r.data) ? (r.data?.keys ?? r.data) : [];
         setKeys(raw.map(normalizeKey));
+        setDeveloperMeta({ scopes: scopes.data, status: status.data });
         setUsingStub(false);
       })
       .catch(() => {
@@ -106,7 +108,7 @@ export default function DeveloperPage() {
     if (!newKey.name.trim()) return;
     setCreating(true);
     try {
-      const r = await api.post('/developer/keys', newKey);
+      const r = await developerApi.createKey(newKey);
       const createdKey = r.data.key ?? r.data;
       setKeys(p => [...p, normalizeKey(createdKey)]);
       setGeneratedKey({ id: createdKey.id, key: r.data.raw_key ?? 'fc_live_' + Math.random().toString(36).slice(2, 10) + 'XXXXXXXXXXXXXXXX' });
@@ -129,13 +131,13 @@ export default function DeveloperPage() {
 
   const handleRevoke = async (id: string) => {
     setRevoking(id);
-    try { await api.delete(`/developer/keys/${id}`); } catch { /* optimistic */ }
+    try { await developerApi.revokeKey(id); } catch { /* optimistic */ }
     setKeys(p => p.filter(k => k.id !== id));
     setRevoking(null);
   };
 
   const handleRotate = async (id: string) => {
-    try { await api.post(`/developer/keys/${id}/rotate`); } catch { /* stub */ }
+    try { await developerApi.getKey(id); await developerApi.rotateKey(id); } catch { /* stub */ }
     const newRaw = `fc_live_${Math.random().toString(36).slice(2)}XXXXXXXXXXXX`;
     setGeneratedKey({ id, key: newRaw });
   };
@@ -405,6 +407,10 @@ export default function DeveloperPage() {
       </div>
 
       {/* ── Tier cards ── */}
+      <div className="neon-card" style={{ padding: 14 }}>
+        <p style={{ fontSize: 12, fontWeight: 700, color: '#374151', margin: '0 0 6px' }}>Developer status and scopes</p>
+        <pre style={{ margin: 0, maxHeight: 90, overflow: 'auto', whiteSpace: 'pre-wrap', fontSize: 10, color: '#64748b' }}>{JSON.stringify(developerMeta, null, 2)}</pre>
+      </div>
       <div className="stagger" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 12 }}>
         {TIERS.map((t) => (
           <div

@@ -2,30 +2,11 @@
 
 import { useState, useCallback } from 'react';
 import { HeartPulse, MapPin, RefreshCw, Zap, AlertTriangle, Wind, Clock, CheckCircle, User } from 'lucide-react';
-import api from '@/lib/api';
+import { commuteApi } from '@/lib/api';
+import type { CommuteStressData } from '@/lib/types';
 
 /* ── Real API shapes ─────────────────────────────────────────────── */
-interface ApiBreakdown {
-  data_available?: boolean;
-  // Only present when data_available !== false
-  duration_vs_freeflow_pct?: number;
-  active_incidents?: number;
-  speed_variability?: 'low' | 'medium' | 'high';
-  congestion_level?: string;
-}
-
-interface StressResult {
-  location: string;
-  stress_score: number;
-  label: string;
-  color: 'green' | 'yellow' | 'orange' | 'red';
-  verdict: string;
-  breakdown: ApiBreakdown;
-  personal_comparison: string | null;
-  tip: string;
-  active_incidents: number;
-  evaluated_at: string;
-}
+type StressResult = CommuteStressData;
 
 /* ── Color map from API "color" string → hex ─────────────────────── */
 const COLOR_HEX: Record<string, string> = {
@@ -149,13 +130,13 @@ export default function StressScorePage() {
     setLoading(true);
     setResult(null);
     try {
-      // Only location is required — distance_km defaults to 10 on the backend
-      const res = await api.get<StressResult>('/commute/stress-score', { params: { location } });
+      const res = await commuteApi.stressScore({ location: location.trim() });
       setResult(res.data);
     } catch {
+      /* keep null */
+    } finally {
       setLoading(false);
     }
-    setLoading(false);
   }, [location]);
 
   const colorHex = result ? (COLOR_HEX[result.color] ?? '#f97316') : '#f97316';
@@ -253,7 +234,7 @@ export default function StressScorePage() {
 
         {/* Quick presets */}
         <div className="flex flex-wrap gap-2" style={{ marginTop: 12 }}>
-          {['Silk Board, Bengaluru', 'Andheri, Mumbai', 'Connaught Place, Delhi', 'Hitech City, Hyderabad'].map((loc) => (
+          {['Silk Board, Bangalore', 'Andheri, Mumbai', 'Connaught Place, Delhi', 'Hitech City, Hyderabad'].map((loc) => (
             <button
               key={loc}
               onClick={() => setLocation(loc)}
@@ -285,7 +266,11 @@ export default function StressScorePage() {
                   <p style={{ fontSize: 11.5, fontWeight: 700, color: '#64748b', textTransform: 'uppercase', letterSpacing: '0.07em', marginBottom: 3 }}>
                     Current Score
                   </p>
-                  <p style={{ fontSize: 12, color: '#94a3b8' }}>{result.location}</p>
+                  <p style={{ fontSize: 12, color: '#94a3b8' }}>
+                    {result.matched_location && result.matched_location !== result.location
+                      ? `${result.location} → matched “${result.matched_location}”`
+                      : result.location}
+                  </p>
                 </div>
                 <span
                   style={{
@@ -342,12 +327,12 @@ export default function StressScorePage() {
             <div className="neon-card" style={{ padding: '22px 24px' }}>
               <h2 style={{ fontSize: 14.5, fontWeight: 700, color: '#0f172a', marginBottom: 4 }}>Score Breakdown</h2>
               <p style={{ fontSize: 12, color: '#94a3b8', marginBottom: 14 }}>
-                {result.breakdown.data_available === false
+                {result.breakdown?.data_available === false
                   ? 'Estimated — no recent traffic records for this area'
-                  : '4 live factors from real traffic data'}
+                  : 'Live factors from real traffic data (not inflated when congestion is already low)'}
               </p>
 
-              {result.breakdown.data_available === false ? (
+              {result.breakdown?.data_available === false ? (
                 /* ── No-data state ── */
                 <div
                   style={{
@@ -381,8 +366,8 @@ export default function StressScorePage() {
                       <AlertTriangle size={13} color="#f97316" />
                       <span style={{ fontSize: 12.5, color: '#334155', fontWeight: 600 }}>Active Incidents Nearby</span>
                     </div>
-                    <span style={{ fontSize: 13, fontWeight: 800, color: result.active_incidents > 0 ? '#ef4444' : '#10b981', textShadow: result.active_incidents > 0 ? '0 0 8px rgba(239,68,68,0.5)' : '0 0 8px rgba(16,185,129,0.5)' }}>
-                      {result.active_incidents}
+                    <span style={{ fontSize: 13, fontWeight: 800, color: (result.active_incidents ?? 0) > 0 ? '#ef4444' : '#10b981', textShadow: (result.active_incidents ?? 0) > 0 ? '0 0 8px rgba(239,68,68,0.5)' : '0 0 8px rgba(16,185,129,0.5)' }}>
+                      {result.active_incidents ?? 0}
                     </span>
                   </div>
                 </div>
@@ -394,40 +379,40 @@ export default function StressScorePage() {
                     <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
                       <div style={{ flex: 1, height: 6, borderRadius: 99, background: '#f1f5f9', overflow: 'hidden' }}>
                         <div className="progress-neon-red" style={{
-                          width: `${Math.min(100, result.breakdown.duration_vs_freeflow_pct ?? 0)}%`,
+                          width: `${Math.min(100, result.breakdown?.duration_vs_freeflow_pct ?? 0)}%`,
                           height: '100%', transition: 'width 1s ease',
                         }} />
                       </div>
                       <span style={{ fontSize: 12.5, fontWeight: 700, color: '#ef4444', minWidth: 42, textAlign: 'right' }}>
-                        +{Math.round(result.breakdown.duration_vs_freeflow_pct ?? 0)}%
+                        +{Math.round(result.breakdown?.duration_vs_freeflow_pct ?? 0)}%
                       </span>
                     </div>
                   </FactorBar>
 
                   {/* Factor 2: Active incidents — always from top-level field */}
                   <FactorBar label="Active Incidents Nearby" icon={<AlertTriangle size={15} color="#f97316" />}>
-                    <ProgressFactorBar value={result.active_incidents} max={5} color="#f97316" />
+                    <ProgressFactorBar value={result.active_incidents ?? 0} max={5} color="#f97316" />
                   </FactorBar>
 
                   {/* Factor 3: Speed variability */}
                   <FactorBar
                     label="Speed Variability (stop-and-go)"
-                    icon={<Wind size={15} color={variabilityColor(result.breakdown.speed_variability ?? 'low')} />}
+                    icon={<Wind size={15} color={variabilityColor(result.breakdown?.speed_variability ?? 'low')} />}
                   >
                     <div className="flex items-center gap-2">
                       <div style={{ flex: 1, height: 6, borderRadius: 99, background: '#f1f5f9', overflow: 'hidden' }}>
                         <div className="progress-neon" style={{
-                          width: result.breakdown.speed_variability === 'high' ? '80%'
-                            : result.breakdown.speed_variability === 'medium' ? '45%' : '15%',
+                          width: result.breakdown?.speed_variability === 'high' ? '80%'
+                            : result.breakdown?.speed_variability === 'medium' ? '45%' : '15%',
                           height: '100%', transition: 'width 1s ease',
                         }} />
                       </div>
                       <span style={{
                         fontSize: 12.5, fontWeight: 700,
-                        color: variabilityColor(result.breakdown.speed_variability ?? 'low'),
+                        color: variabilityColor(result.breakdown?.speed_variability ?? 'low'),
                         textTransform: 'capitalize', minWidth: 48, textAlign: 'right',
                       }}>
-                        {result.breakdown.speed_variability ?? '—'}
+                        {result.breakdown?.speed_variability ?? '—'}
                       </span>
                     </div>
                   </FactorBar>
@@ -435,19 +420,19 @@ export default function StressScorePage() {
                   {/* Factor 4: Congestion level */}
                   <FactorBar
                     label="Overall Congestion Level"
-                    icon={<HeartPulse size={15} color={CONGESTION_STYLE[result.breakdown.congestion_level ?? '']?.color ?? '#64748b'} />}
+                    icon={<HeartPulse size={15} color={CONGESTION_STYLE[result.breakdown?.congestion_level ?? '']?.color ?? '#64748b'} />}
                   >
                     <span
                       style={{
                         padding: '3px 12px', borderRadius: 99,
                         fontSize: 12, fontWeight: 700,
-                        background: CONGESTION_STYLE[result.breakdown.congestion_level ?? '']?.bg ?? '#f1f5f9',
-                        color: CONGESTION_STYLE[result.breakdown.congestion_level ?? '']?.color ?? '#64748b',
+                        background: CONGESTION_STYLE[result.breakdown?.congestion_level ?? '']?.bg ?? '#f1f5f9',
+                        color: CONGESTION_STYLE[result.breakdown?.congestion_level ?? '']?.color ?? '#64748b',
                         textTransform: 'capitalize',
-                        boxShadow: `0 0 8px ${CONGESTION_STYLE[result.breakdown.congestion_level ?? '']?.color ?? '#64748b'}30`,
+                        boxShadow: `0 0 8px ${CONGESTION_STYLE[result.breakdown?.congestion_level ?? '']?.color ?? '#64748b'}30`,
                       }}
                     >
-                      {result.breakdown.congestion_level ?? '—'}
+                      {result.breakdown?.congestion_level ?? '—'}
                     </span>
                   </FactorBar>
                 </>
@@ -482,9 +467,11 @@ export default function StressScorePage() {
           )}
 
           {/* Evaluated timestamp */}
-          <p style={{ fontSize: 11.5, color: '#94a3b8', textAlign: 'right' }}>
-            Evaluated at {new Date(result.evaluated_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })} IST
-          </p>
+          {result.evaluated_at && (
+            <p style={{ fontSize: 11.5, color: '#94a3b8', textAlign: 'right' }}>
+              Evaluated at {new Date(result.evaluated_at).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })} IST
+            </p>
+          )}
         </>
       )}
 
@@ -498,7 +485,7 @@ export default function StressScorePage() {
             Know your commute stress level
           </h3>
           <p style={{ fontSize: 13, color: '#94a3b8', maxWidth: 380, margin: '0 auto' }}>
-            Enter your city or area above. We'll calculate a 0–100 wellness score from live traffic data — no distance or route needed.
+            Enter your city or area above. We&apos;ll calculate a 0–100 wellness score from live traffic data — no distance or route needed.
           </p>
         </div>
       )}

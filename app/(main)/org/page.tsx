@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { Building2, Crown, Shield, User2, Mail, Plus, Trash2, Users, CheckCircle2 } from 'lucide-react';
-import api from '@/lib/api';
+import { orgApi } from '@/lib/api';
 
 interface Member {
   id: string; full_name: string; email: string;
@@ -34,12 +34,24 @@ export default function OrgPage() {
   const [role,      setRole]      = useState<'admin' | 'member'>('member');
   const [sending,   setSending]   = useState(false);
   const [success,   setSuccess]   = useState('');
+  const [orgs, setOrgs] = useState<Org[]>([]);
 
   const fetchData = useCallback(async () => {
     try {
-      const [oRes, mRes] = await Promise.all([api.get('/org'), api.get('/org/members')]);
-      if (oRes.data) setOrg(oRes.data);
-      if (mRes.data?.members?.length) setMembers(mRes.data.members);
+      const mineRes = await orgApi.listMine();
+      const mine = mineRes.data?.organizations ?? mineRes.data;
+      if (Array.isArray(mine) && mine.length) {
+        setOrgs(mine);
+        const selectedOrg = mine[0];
+        setOrg(selectedOrg);
+        const [detail, memberRes] = await Promise.all([orgApi.get(String(selectedOrg.id)), orgApi.membersOf(String(selectedOrg.id))]);
+        if (detail.data) setOrg(detail.data);
+        if (memberRes.data?.members?.length) setMembers(memberRes.data.members);
+      } else {
+        const [oRes, mRes] = await Promise.all([orgApi.getMine(), orgApi.members()]);
+        if (oRes.data) setOrg(oRes.data);
+        if (mRes.data?.members?.length) setMembers(mRes.data.members);
+      }
     } catch { /* stubs */ }
   }, []);
   // eslint-disable-next-line react-hooks/set-state-in-effect
@@ -48,7 +60,7 @@ export default function OrgPage() {
   const invite = async () => {
     if (!email.trim()) return;
     setSending(true);
-    try { await api.post('/org/invite', { email, role }); } catch { /* ok */ }
+    try { await (org?.id ? orgApi.inviteTo(org.id, { email, role }) : orgApi.invite({ email, role })); } catch { /* ok */ }
     setMembers((p) => [...p, { id: Date.now().toString(), full_name: email.split('@')[0], email, role, joined_at: new Date().toISOString(), is_active: true }]);
     setSuccess(`Invite sent to ${email}`);
     setEmail(''); setShowForm(false); setSending(false);
@@ -56,12 +68,12 @@ export default function OrgPage() {
   };
 
   const changeRole = async (id: string, r: 'admin' | 'member') => {
-    try { await api.put(`/org/members/${id}`, { role: r }); } catch { /* ok */ }
+    try { await (org?.id ? orgApi.changeRoleOf(org.id, id, r) : orgApi.changeRole(id, r)); } catch { /* ok */ }
     setMembers((p) => p.map((m) => m.id === id ? { ...m, role: r } : m));
   };
 
   const remove = async (id: string) => {
-    try { await api.delete(`/org/members/${id}`); } catch { /* ok */ }
+    try { await (org?.id ? orgApi.removeMemberOf(org.id, id) : orgApi.removeMember(id)); } catch { /* ok */ }
     setMembers((p) => p.filter((m) => m.id !== id));
   };
 
@@ -94,6 +106,11 @@ export default function OrgPage() {
                 <p style={{ color: 'rgba(255,255,255,0.5)', fontSize: 11, marginTop: 3 }}>{l}</p>
               </div>
             ))}
+          </div>
+          <div style={{ display: 'flex', gap: 6 }}>
+            <button onClick={() => void orgApi.create({ name: 'New organization' }).then(fetchData)} className="btn-neon" style={{ padding: '7px 10px', borderRadius: 8, fontSize: 11 }}>Create org</button>
+            <button onClick={() => void orgApi.update(org.id, { name: org.name }).then(fetchData)} className="btn-neon" style={{ padding: '7px 10px', borderRadius: 8, fontSize: 11 }}>Sync org</button>
+            <button onClick={() => void orgApi.delete(org.id).then(fetchData)} style={{ padding: '7px 10px', borderRadius: 8, fontSize: 11, color: '#ef4444' }}>Delete org</button>
           </div>
         </div>
       </div>

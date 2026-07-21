@@ -308,18 +308,44 @@ export default function LiveTrafficPage() {
       try {
         const d = JSON.parse(e.data);
         if (!d || d.type === 'ping') return;
+
+        const asLabel = (v: unknown): string => {
+          if (typeof v === 'string') return v;
+          if (typeof v === 'number') return String(v);
+          if (v && typeof v === 'object') {
+            const o = v as Record<string, unknown>;
+            const pick = o.label ?? o.level ?? o.name ?? o.congestion;
+            if (typeof pick === 'string' || typeof pick === 'number') return String(pick);
+          }
+          return 'Medium';
+        };
+
+        const asIncidentCount = (v: unknown): number | undefined => {
+          if (typeof v === 'number' && Number.isFinite(v)) return v;
+          if (Array.isArray(v)) return v.length;
+          if (typeof v === 'string' && v.trim() !== '' && !Number.isNaN(Number(v))) return Number(v);
+          return undefined;
+        };
+
+        const asSpeed = (v: unknown): number | undefined => {
+          if (typeof v === 'number' && Number.isFinite(v)) return v;
+          if (typeof v === 'string' && v.trim() !== '' && !Number.isNaN(Number(v))) return Number(v);
+          return undefined;
+        };
+
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        const preds: MlPrediction[] = (d.predictions ?? []).map((p: any) => ({
-          hour:       Number(p.hour ?? p.target_hour ?? 1),
-          label:      String(p.congestion ?? p.label ?? 'Medium'),
-          confidence: Number(p.confidence ?? 0.8),
+        const preds: MlPrediction[] = (Array.isArray(d.predictions) ? d.predictions : []).map((p: any) => ({
+          hour:       Number(p.hour ?? p.target_hour ?? 1) || 1,
+          label:      asLabel(p.congestion ?? p.label ?? p.level),
+          confidence: Number(p.confidence ?? 0.8) || 0.8,
         }));
+
         setMlLive({
           predictions:      preds.length ? preds : undefined,
-          active_incidents: d.active_incidents ?? d.incidents,
-          avg_speed:        d.avg_speed ?? d.speed_kmh,
-          congestion_level: d.congestion_level ?? d.current_level,
-          timestamp:        d.timestamp,
+          active_incidents: asIncidentCount(d.active_incidents ?? d.incidents),
+          avg_speed:        asSpeed(d.avg_speed ?? d.speed_kmh),
+          congestion_level: asLabel(d.congestion_level ?? d.current_level ?? d.congestion),
+          timestamp:        typeof d.timestamp === 'string' ? d.timestamp : undefined,
         });
       } catch { /* ignore */ }
     };
@@ -446,7 +472,7 @@ export default function LiveTrafficPage() {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 14 }}>
         {[
           { icon: Car,            label: 'Active Vehicles',   value: '200',                        sub: 'across India',    color: '#3b82f6', glowClass: 'icon-glow-blue'   },
-          { icon: Gauge,          label: 'Avg Speed',         value: `${mlLive.avg_speed ?? 42} km/h`, sub: 'all corridors', color: '#8b5cf6', glowClass: 'icon-glow-purple' },
+          { icon: Gauge,          label: 'Avg Speed',         value: `${Number(mlLive.avg_speed) || 42} km/h`, sub: 'all corridors', color: '#8b5cf6', glowClass: 'icon-glow-purple' },
           { icon: CloudLightning, label: 'Congestion Events', value: String(spikeCount),           sub: 'last hour',       color: '#ef4444', glowClass: 'icon-glow-red'    },
           { icon: CheckCircle2,   label: 'Cleared Events',    value: String(clearCount),           sub: 'last hour',       color: '#22c55e', glowClass: 'icon-glow-green'  },
         ].map(({ icon: Icon, label, value, sub, color, glowClass }) => (
@@ -678,8 +704,8 @@ export default function LiveTrafficPage() {
               <p style={{ fontSize: 10, fontWeight: 700, color: '#7c3aed', textTransform: 'uppercase', letterSpacing: '0.07em', margin: '0 0 10px' }}>Live Snapshot</p>
               <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
                 {[
-                  { label: 'Avg Speed', value: `${mlLive.avg_speed ?? 42} km/h`, color: '#60a5fa' },
-                  { label: 'Incidents', value: String(mlLive.active_incidents ?? 3),   color: '#f87171' },
+                  { label: 'Avg Speed', value: `${Number(mlLive.avg_speed) || 42} km/h`, color: '#60a5fa' },
+                  { label: 'Incidents', value: String(Number(mlLive.active_incidents) || 0), color: '#f87171' },
                 ].map(({ label, value, color }) => (
                   <div key={label} style={{ textAlign: 'center', padding: '8px', borderRadius: 8, background: 'rgba(255,255,255,0.03)', border: '1px solid rgba(255,255,255,0.06)' }}>
                     <p style={{ fontSize: 20, fontWeight: 900, color, letterSpacing: '-0.04em', margin: 0 }}>{value}</p>
@@ -687,7 +713,7 @@ export default function LiveTrafficPage() {
                   </div>
                 ))}
               </div>
-              {mlLive.congestion_level && (
+              {typeof mlLive.congestion_level === 'string' && mlLive.congestion_level && (
                 <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 7 }}>
                   <Activity size={12} color="#a78bfa" />
                   <span style={{ fontSize: 11.5, color: '#a78bfa', fontWeight: 600, textTransform: 'capitalize' }}>

@@ -6,10 +6,12 @@ import {
   LayoutDashboard, Map, BarChart2, Navigation, CalendarClock,
   ShieldCheck, Settings, HelpCircle, Zap, LogOut, Bell, Activity,
   TrendingUp, Radio, Flame, Building2, Truck, Hexagon, Webhook,
-  GitBranch, FileBarChart, Bot, Clock, Newspaper, HeartPulse,
-  Train, BarChart3, CloudRain, AlertTriangle, Code2, Brain,
+  GitBranch, FileBarChart, Clock, Newspaper, HeartPulse,
+  Train, BarChart3, CloudRain, AlertTriangle, Code2, Brain, Users,
+  Timer, Star, Leaf, Route, MapPinned, Database, X,
 } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
+import { useNotifications } from '@/contexts/NotificationContext';
 
 // ── Section colour palette ────────────────────────────────────────────────────
 
@@ -55,9 +57,10 @@ const NAV_SECTIONS: NavSection[] = [
     heading: 'Overview',
     items: [
       { label: 'Dashboard',    href: '/dashboard',    icon: LayoutDashboard },
-      { label: 'India Map',    href: '/india-map',    icon: Map,   badge: 'LIVE', badgeVariant: 'live' },
-      { label: 'Live Traffic', href: '/live-traffic', icon: Radio, badge: 'LIVE', badgeVariant: 'live' },
-      { label: 'Heatmap',      href: '/heatmap',      icon: Flame, badge: 'NEW',  badgeVariant: 'new'  },
+      { label: 'India Map',      href: '/india-map',      icon: Map,   badge: 'LIVE', badgeVariant: 'live' },
+      { label: 'Live Traffic',  href: '/live-traffic',  icon: Radio, badge: 'LIVE', badgeVariant: 'live' },
+      { label: 'Crowd Monitor', href: '/crowd-monitor', icon: Users, badge: 'LIVE', badgeVariant: 'live' },
+      { label: 'Heatmap',       href: '/heatmap',       icon: Flame, badge: 'NEW',  badgeVariant: 'new'  },
     ],
   },
   {
@@ -66,12 +69,17 @@ const NAV_SECTIONS: NavSection[] = [
       { label: 'Analytics',       href: '/analytics',       icon: BarChart2     },
       { label: 'Route Optimizer', href: '/route-optimizer', icon: Navigation    },
       { label: 'Commute Planner', href: '/commute-planner', icon: CalendarClock },
+      { label: 'ETA Calculator',  href: '/eta',             icon: Timer         },
+      { label: 'Area Predict',    href: '/area-predict',    icon: MapPinned, badge: 'NEW', badgeVariant: 'new' },
+      { label: 'Favorites',       href: '/favorites',       icon: Star          },
+      { label: 'Trip History',    href: '/trips',           icon: Route         },
+      { label: 'Carbon Footprint',href: '/eco',             icon: Leaf          },
     ],
   },
   {
     heading: 'AI Features',
     items: [
-      { label: 'AI Copilot',         href: '/ai-copilot',      icon: Bot,        badge: 'AI',   badgeVariant: 'ai'   },
+      // { label: 'AI Copilot',         href: '/ai-copilot',      icon: Bot,        badge: 'AI',   badgeVariant: 'ai'   },
       { label: 'Departure Coach',    href: '/departure-coach', icon: Clock,      badge: 'AI',   badgeVariant: 'ai'   },
       { label: 'Traffic Stories',    href: '/traffic-stories', icon: Newspaper,  badge: 'LIVE', badgeVariant: 'live' },
       { label: 'Stress Score',       href: '/stress-score',    icon: HeartPulse, badge: 'AI',   badgeVariant: 'ai'   },
@@ -82,10 +90,11 @@ const NAV_SECTIONS: NavSection[] = [
   {
     heading: 'Data & Tools',
     items: [
-      { label: 'Weather Impact',    href: '/weather',    icon: CloudRain,     badge: 'NEW',  badgeVariant: 'new'  },
-      { label: 'Incidents',         href: '/incidents',  icon: AlertTriangle, badge: 'LIVE', badgeVariant: 'live' },
-      { label: 'ML Prediction',     href: '/ml-predict', icon: Brain,         badge: 'AI',   badgeVariant: 'ai'   },
-      { label: 'Developer Portal',  href: '/developer',  icon: Code2,         badge: 'NEW',  badgeVariant: 'new'  },
+      { label: 'Traffic Data',      href: '/traffic-data', icon: Database,      badge: 'NEW',  badgeVariant: 'new'  },
+      { label: 'Weather Impact',    href: '/weather',      icon: CloudRain,     badge: 'NEW',  badgeVariant: 'new'  },
+      { label: 'Incidents',         href: '/incidents',    icon: AlertTriangle, badge: 'LIVE', badgeVariant: 'live' },
+      { label: 'ML Prediction',     href: '/ml-predict',   icon: Brain,         badge: 'AI',   badgeVariant: 'ai'   },
+      { label: 'Developer Portal',  href: '/developer',    icon: Code2,         badge: 'NEW',  badgeVariant: 'new'  },
     ],
   },
   {
@@ -102,7 +111,7 @@ const NAV_SECTIONS: NavSection[] = [
   {
     heading: 'System',
     items: [
-      { label: 'Notifications', href: '/notifications', icon: Bell,        badge: '4', badgeVariant: 'count' },
+      { label: 'Notifications', href: '/notifications', icon: Bell,        badgeVariant: 'count' as const },
       { label: 'Admin Panel',   href: '/admin',          icon: ShieldCheck, adminOnly: true },
       { label: 'Settings',      href: '/settings',       icon: Settings  },
       { label: 'Support',       href: '/support',        icon: HelpCircle },
@@ -173,9 +182,15 @@ function Badge({ text, variant, theme }: { text: string; variant?: 'live' | 'cou
 
 // ── Main Sidebar ──────────────────────────────────────────────────────────────
 
-export default function Sidebar() {
+interface SidebarProps {
+  open?: boolean;
+  onClose?: () => void;
+}
+
+export default function Sidebar({ open = false, onClose }: SidebarProps) {
   const pathname  = usePathname();
   const { user, logout } = useAuth();
+  const { unreadCount } = useNotifications();
   const router    = useRouter();
 
   const isActive = (href: string) => pathname === href || pathname.startsWith(href + '/');
@@ -187,25 +202,34 @@ export default function Sidebar() {
     : 'U';
 
   return (
-    <aside
-      style={{
-        width: 248,
-        background: 'linear-gradient(180deg, #07101f 0%, #080e1c 55%, #070d1b 100%)',
-        borderRight: '1px solid rgba(255,255,255,0.05)',
-        flexShrink: 0,
-        display: 'flex',
-        flexDirection: 'column',
-        height: '100%',
-        overflowY: 'auto',
-        position: 'relative',
-      }}
-      className="sidebar-scroll"
-    >
+    <>
+      {/* Mobile backdrop — only when drawer is open */}
+      <button
+        type="button"
+        aria-label="Close navigation"
+        className={`fixed inset-0 z-40 bg-[#070e1f]/55 backdrop-blur-[2px] transition-opacity duration-200 lg:hidden ${
+          open ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none'
+        }`}
+        onClick={onClose}
+      />
+
+      <aside
+        className={`sidebar-scroll flex flex-col shrink-0 z-50
+          fixed inset-y-0 left-0 h-dvh w-62 max-w-[85vw]
+          transition-transform duration-200 ease-out
+          lg:static lg:h-full lg:max-w-none lg:translate-x-0 lg:shadow-none
+          ${open ? 'translate-x-0 shadow-[8px_0_32px_rgba(0,0,0,0.35)]' : '-translate-x-full pointer-events-none lg:pointer-events-auto'}`}
+        style={{
+          background: 'linear-gradient(180deg, #07101f 0%, #080e1c 55%, #070d1b 100%)',
+          borderRight: '1px solid rgba(255,255,255,0.05)',
+          overflowY: 'auto',
+        }}
+      >
       {/* Subtle side glow */}
       <div style={{ position: 'absolute', top: 0, right: 0, bottom: 0, width: 1, background: 'linear-gradient(180deg, transparent, rgba(59,130,246,0.15) 30%, rgba(139,92,246,0.1) 70%, transparent)', pointerEvents: 'none' }} />
 
       {/* ── Logo ──────────────────────────────────────────────────────── */}
-      <div style={{ padding: '20px 16px 14px', flexShrink: 0 }}>
+      <div style={{ padding: '20px 16px 14px', flexShrink: 0, position: 'relative' }}>
         <div style={{ display: 'flex', alignItems: 'center', gap: 11, marginBottom: 14 }}>
           <div
             className="radium-pulse"
@@ -218,10 +242,23 @@ export default function Sidebar() {
           >
             <Zap size={19} color="white" />
           </div>
-          <div>
+          <div style={{ flex: 1, minWidth: 0 }}>
             <p className="gradient-text-animated" style={{ fontWeight: 900, fontSize: 15.5, lineHeight: 1.1, letterSpacing: '-0.03em', margin: 0 }}>Flow India</p>
             <p style={{ color: '#2d4a6a', fontSize: 10.5, marginTop: 2 }}>Traffic Intelligence</p>
           </div>
+          <button
+            type="button"
+            className="lg:hidden"
+            onClick={onClose}
+            aria-label="Close navigation"
+            style={{
+              background: 'rgba(255,255,255,0.06)', border: '1px solid rgba(255,255,255,0.08)',
+              borderRadius: 8, padding: 6, cursor: 'pointer', color: '#94a3b8',
+              display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0,
+            }}
+          >
+            <X size={16} />
+          </button>
         </div>
 
         {/* System status chip */}
@@ -273,6 +310,7 @@ export default function Sidebar() {
                     <li key={href}>
                       <Link
                         href={href}
+                        onClick={onClose}
                         style={{
                           position: 'relative',
                           display: 'flex', alignItems: 'center', gap: 9,
@@ -326,7 +364,10 @@ export default function Sidebar() {
                         </div>
 
                         <span style={{ flex: 1, letterSpacing: '-0.01em', lineHeight: 1 }}>{label}</span>
-                        {badge && <Badge text={badge} variant={badgeVariant} theme={theme} />}
+                        {href === '/notifications'
+                          ? unreadCount > 0 && <Badge text={unreadCount > 99 ? '99+' : String(unreadCount)} variant="count" theme={theme} />
+                          : badge && <Badge text={badge} variant={badgeVariant} theme={theme} />
+                        }
                       </Link>
                     </li>
                   );
@@ -418,5 +459,6 @@ export default function Sidebar() {
         </div>
       )}
     </aside>
+    </>
   );
 }

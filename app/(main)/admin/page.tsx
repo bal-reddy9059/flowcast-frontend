@@ -5,7 +5,7 @@ import {
   Users, TrendingUp, Server, AlertTriangle, X, RefreshCw,
   UserX, UserCheck, Trash2, ChevronLeft, ChevronRight, Database, Play,
 } from 'lucide-react';
-import api from '@/lib/api';
+import { adminApi, authApi } from '@/lib/api';
 import { useAuth } from '@/contexts/AuthContext';
 
 interface AdminUser {
@@ -60,9 +60,10 @@ export default function AdminPage() {
 
   const fetchData = useCallback(async () => {
     try {
-      const [statsRes, usersRes] = await Promise.all([
-        api.get('/admin/stats'),
-        api.get('/admin/users'),
+      const [statsRes, usersRes, dbRes] = await Promise.all([
+        adminApi.stats(),
+        adminApi.users(),
+        adminApi.db(),
       ]);
       if (statsRes.data) {
         setStats({
@@ -76,6 +77,7 @@ export default function AdminPage() {
         }
       }
       if (usersRes.data?.users) setUsers(usersRes.data.users);
+      if (dbRes.data?.connection_pool) setDbPool(dbRes.data.connection_pool);
     } catch { /* use stubs */ }
   }, []);
 
@@ -83,20 +85,36 @@ export default function AdminPage() {
   useEffect(() => { void fetchData(); }, [fetchData]);
 
   const handleToggleUser = async (id: string) => {
-    try { await api.put(`/admin/users/${id}/toggle`); } catch { /* ignore */ }
+    const target = users.find((user) => user.id === id);
+    try { await (target?.is_active ? adminApi.deactivate(id) : adminApi.activate(id)); } catch { /* ignore */ }
     setUsers((prev) => prev.map((u) => u.id === id ? { ...u, is_active: !u.is_active } : u));
   };
 
   const handleDeleteUser = async (id: string) => {
     if (!confirm('Delete this user permanently?')) return;
-    try { await api.delete(`/admin/users/${id}`); } catch { /* ignore */ }
+    try { await adminApi.deactivate(id); } catch { /* ignore */ }
     setUsers((prev) => prev.filter((u) => u.id !== id));
   };
 
   const handleVacuum = async () => {
     setIsVacuuming(true);
-    try { await api.post('/admin/db/vacuum'); } catch { /* ignore */ }
+    try { await adminApi.purgeOldRecords(); } catch { /* ignore */ }
     setTimeout(() => { setIsVacuuming(false); setVacuumDone(true); setTimeout(() => setVacuumDone(false), 3000); }, 2500);
+  };
+
+  const [setupMsg, setSetupMsg] = useState('');
+  const handleSetupAdmin = async () => {
+    setSetupMsg('');
+    const secret = window.prompt('Enter the admin setup secret');
+    if (!secret) return;
+    try {
+      await authApi.setupAdmin(secret);
+      setSetupMsg('Setup admin request sent.');
+      await fetchData();
+    } catch (err) {
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
+      setSetupMsg(detail || 'Setup admin failed (endpoint may already be configured).');
+    }
   };
 
   const paginatedUsers = users.slice((page - 1) * perPage, page * perPage);
@@ -382,10 +400,21 @@ export default function AdminPage() {
                 ) : (
                   <>
                     <Play size={14} />
-                    Run Vacuum Analyze
+                    Purge Old Traffic Records
                   </>
                 )}
               </button>
+              <button
+                onClick={handleSetupAdmin}
+                className="btn-neon"
+                style={{
+                  width: '100%', padding: '10px', borderRadius: 10, fontSize: 13, fontWeight: 700,
+                  cursor: 'pointer', color: '#2563eb',
+                }}
+              >
+                Run Setup Admin
+              </button>
+              {setupMsg && <p style={{ fontSize: 12, color: '#64748b', margin: 0 }}>{setupMsg}</p>}
             </div>
           </div>
         </div>

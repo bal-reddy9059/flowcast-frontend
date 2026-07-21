@@ -2,7 +2,7 @@
 
 import { useState, useCallback } from 'react';
 import { Navigation, Car, Train, Bike, RefreshCw, Zap, ArrowRight, MapPin, Clock, Leaf, IndianRupee, ChevronRight, Info, Key } from 'lucide-react';
-import api from '@/lib/api';
+import { multimodalApi } from '@/lib/api';
 
 /* ── Real API shapes ─────────────────────────────────────────────── */
 interface ApiSegment {
@@ -21,6 +21,7 @@ interface ApiPlan {
   total_cost_inr: number;
   carbon_saved_kg: number;
   summary?: string;
+  source?: string;
   error?: string;
 }
 
@@ -50,6 +51,7 @@ interface DisplayResult {
   vs_driving_only: string;
   carbon_saved: string;
   summary?: string;
+  source?: string;
 }
 
 /* ── Transform API → display ─────────────────────────────────────── */
@@ -82,6 +84,7 @@ function transformResponse(data: ApiResponse): DisplayResult {
     vs_driving_only: savingsText,
     carbon_saved:    (plan.carbon_saved_kg ?? 0) > 0 ? `${plan.carbon_saved_kg} kg CO₂` : '—',
     summary:         plan.summary,
+    source:          plan.source,
   };
 }
 
@@ -203,25 +206,33 @@ export default function MultimodalPage() {
 
     try {
       const departAt = resolveDepartAt(departureTime);
-      const res = await api.post<ApiResponse>('/routes/multimodal', {
-        origin,
-        destination,
-        ...(departAt && { depart_at: departAt }),
-      });
+      const params = { origin: origin.trim(), destination: destination.trim(), ...(departAt && { departure_time: departAt }) };
+      let data: ApiResponse;
+      try {
+        const res = await multimodalApi.plan(origin.trim(), destination.trim(), departAt);
+        data = res.data as ApiResponse;
+      } catch {
+        const res = await multimodalApi.planGet(params);
+        data = res.data as ApiResponse;
+      }
 
-      const data = res.data;
-
-      // Backend returned an error in the plan (e.g. no API key)
-      if (!data.plan || data.plan.error) {
-        setApiError(data.plan?.error ?? 'No plan returned from server.');
-        setLoading(false);
+      if (!data?.plan || data.plan.error || !(data.plan.segments?.length)) {
+        const msg = data?.plan?.error
+          || (typeof data === 'object' && data && 'error' in data ? String((data as { error?: string }).error) : null)
+          || 'No plan returned from server.';
+        setApiError(msg);
         return;
       }
 
       setResult(transformResponse(data));
     } catch (err: unknown) {
-      const msg = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail;
-      setApiError(msg ?? 'Failed to connect to backend.');
+      const e = err as { response?: { data?: { error?: string; detail?: string | { message?: string } } }; message?: string };
+      const detail = e.response?.data?.detail;
+      const msg = e.response?.data?.error
+        || (typeof detail === 'string' ? detail : detail?.message)
+        || e.message
+        || 'Failed to connect to backend.';
+      setApiError(msg);
     } finally {
       setLoading(false);
     }
@@ -394,33 +405,45 @@ export default function MultimodalPage() {
         </div>
       </div>
 
-      {/* ── API key error state ────────────────── */}
+      {/* ── Error state ────────────────── */}
       {apiError && (
         <div className="neon-card" style={{ padding: '32px 24px', textAlign: 'center' }}>
           <div className="icon-glow icon-glow-yellow" style={{ width: 48, height: 48, borderRadius: 14, margin: '0 auto 14px' }}>
             <Key size={22} color="#f59e0b" />
           </div>
           <h3 style={{ fontSize: 15, fontWeight: 700, color: '#0f172a', marginBottom: 6 }}>
-            AI Planning Unavailable
+            {/anthropic|api.?key/i.test(apiError) ? 'AI Planning Unavailable' : 'Planning Failed'}
           </h3>
           <p style={{ fontSize: 13, color: '#64748b', maxWidth: 420, margin: '0 auto 12px', lineHeight: 1.6 }}>
             {apiError}
           </p>
-          <div
-            style={{
-              display: 'inline-block', padding: '8px 16px', borderRadius: 8,
-              background: '#f8fafc', border: '1px solid #e2e8f0',
-              fontSize: 12, fontFamily: 'monospace', color: '#334155',
-            }}
-          >
-            ANTHROPIC_API_KEY=sk-ant-... in backend .env
-          </div>
+          {/anthropic|api.?key/i.test(apiError) && (
+            <div
+              style={{
+                display: 'inline-block', padding: '8px 16px', borderRadius: 8,
+                background: '#f8fafc', border: '1px solid #e2e8f0',
+                fontSize: 12, fontFamily: 'monospace', color: '#334155',
+              }}
+            >
+              ANTHROPIC_API_KEY=sk-ant-... in backend .env (optional — rule-based plans work without it)
+            </div>
+          )}
         </div>
       )}
 
       {/* ── Results ───────────────────────────── */}
       {result && (
         <>
+          {result.source && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+              <span
+                className="neon-badge-blue"
+                style={{ fontSize: 11, fontWeight: 700, padding: '3px 10px', borderRadius: 99 }}
+              >
+                {result.source === 'ai' ? 'AI plan' : 'Rule-based plan (no API key needed)'}
+              </span>
+            </div>
+          )}
           {/* Summary strip */}
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
             {[

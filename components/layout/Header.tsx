@@ -1,17 +1,26 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { usePathname } from 'next/navigation';
-import { Bell, Search, Wifi, WifiOff, ChevronDown, LogOut, User, Settings } from 'lucide-react';
+import { Bell, Search, Wifi, WifiOff, ChevronDown, LogOut, User, Settings, Menu } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
 import { useNotifications } from '@/contexts/NotificationContext';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
+import { trafficApi } from '@/lib/api';
+
+interface LocationSearchResult {
+  location: string;
+  congestion_level?: string;
+  average_speed_kmh?: number | null;
+}
 
 const PAGE_META: Record<string, { title: string; subtitle: string }> = {
   '/dashboard':        { title: 'Dashboard',              subtitle: 'Real-time network overview' },
   '/india-map':        { title: 'India Live Map',          subtitle: '766 districts — WebSocket feed' },
+  '/eta':              { title: 'ETA Calculator',         subtitle: 'Real-time travel time from live congestion data' },
   '/analytics':        { title: 'Analytics',              subtitle: 'Network intelligence & trends' },
+  '/crowd-monitor':    { title: 'Crowd Monitor',           subtitle: 'Live crowd levels for bus & rail stations across Bangalore & Hyderabad' },
   '/route-optimizer':  { title: 'Route Optimizer',        subtitle: 'AI-powered route planning' },
   '/commute-planner':  { title: 'Commute Planner',        subtitle: 'Rush-hour forecasts & alerts' },
   '/org':              { title: 'Organizations',           subtitle: 'Teams, roles & member management' },
@@ -38,7 +47,7 @@ const PAGE_META: Record<string, { title: string; subtitle: string }> = {
   '/support':          { title: 'Support',                 subtitle: 'Help & documentation' },
 };
 
-export default function Header() {
+export default function Header({ onMenuClick }: { onMenuClick?: () => void }) {
   const { user, logout } = useAuth();
   const { unreadCount, isConnected } = useNotifications();
   const router = useRouter();
@@ -46,8 +55,16 @@ export default function Header() {
   const [showUserMenu, setShowUserMenu] = useState(false);
   const [latency, setLatency] = useState(17);
   const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<LocationSearchResult[]>([]);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchLoading, setSearchLoading] = useState(false);
+  const [searchError, setSearchError] = useState('');
+  const searchRequestRef = useRef(0);
 
-  const pageMeta = PAGE_META[pathname] ?? { title: 'Flow India', subtitle: '' };
+  // Exact match first, then prefix match for dynamic sub-routes
+  const pageMeta = PAGE_META[pathname]
+    ?? Object.entries(PAGE_META).find(([k]) => pathname.startsWith(k + '/'))?.[1]
+    ?? { title: 'Flow India', subtitle: '' };
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -56,23 +73,69 @@ export default function Header() {
     return () => clearInterval(interval);
   }, []);
 
+  useEffect(() => {
+    const query = searchQuery.trim();
+    if (query.length < 2) {
+      return;
+    }
+
+    const requestId = ++searchRequestRef.current;
+    const timer = window.setTimeout(async () => {
+      setSearchLoading(true);
+      setSearchError('');
+      try {
+        const response = await trafficApi.searchLocations(query);
+        if (requestId !== searchRequestRef.current) return;
+        const payload = response.data as { results?: LocationSearchResult[] };
+        setSearchResults(Array.isArray(payload.results) ? payload.results : []);
+        setSearchOpen(true);
+      } catch {
+        if (requestId !== searchRequestRef.current) return;
+        setSearchResults([]);
+        setSearchError('Search unavailable');
+        setSearchOpen(true);
+      } finally {
+        if (requestId === searchRequestRef.current) setSearchLoading(false);
+      }
+    }, 250);
+
+    return () => window.clearTimeout(timer);
+  }, [searchQuery]);
+
+  const openLocation = (location: string) => {
+    const value = location.trim();
+    if (!value) return;
+    setSearchQuery(value);
+    setSearchOpen(false);
+    router.push(`/analytics?location=${encodeURIComponent(value)}`);
+  };
+
+  const submitSearch = (event: React.FormEvent) => {
+    event.preventDefault();
+    openLocation(searchResults[0]?.location || searchQuery);
+  };
+
   const handleLogout = () => {
     logout();
     router.push('/login');
   };
 
-  const initials = user?.full_name
-    ? user.full_name.split(' ').map((n: string) => n[0]).join('').slice(0, 2).toUpperCase()
-    : 'U';
+  const displayName =
+    user?.full_name?.trim()?.split(/\s+/)[0] ||
+    user?.email?.split('@')[0] ||
+    'User';
+
+  const initials = user?.full_name?.trim()
+    ? user.full_name.split(/\s+/).map((n: string) => n[0]).filter(Boolean).join('').slice(0, 2).toUpperCase()
+    : user?.email?.[0]?.toUpperCase() || 'U';
 
   return (
     <header
-      className="flex items-center gap-4 shrink-0"
+      className="app-header flex items-center gap-2 sm:gap-3 shrink-0"
       style={{
         height: 60,
         background: 'rgba(255,255,255,0.98)',
         borderBottom: '1px solid rgba(59,130,246,0.1)',
-        padding: '0 24px',
         boxShadow: '0 1px 12px rgba(59,130,246,0.05), 0 1px 3px rgba(0,0,0,0.04)',
         backdropFilter: 'blur(12px)',
         WebkitBackdropFilter: 'blur(12px)',
@@ -92,7 +155,28 @@ export default function Header() {
         }}
       />
 
-      {/* Page title */}
+      {/* Mobile menu — only below lg */}
+      <button
+        type="button"
+        className="flex lg:hidden"
+        onClick={onMenuClick}
+        aria-label="Open navigation"
+        style={{
+          background: 'rgba(59,130,246,0.08)',
+          border: '1px solid rgba(59,130,246,0.15)',
+          borderRadius: 9,
+          padding: 8,
+          cursor: 'pointer',
+          color: '#3b82f6',
+          alignItems: 'center',
+          justifyContent: 'center',
+          flexShrink: 0,
+        }}
+      >
+        <Menu size={18} />
+      </button>
+
+      {/* Page title — desktop */}
       <div className="shrink-0 mr-2 hidden lg:block">
         <p style={{ fontSize: 14, fontWeight: 700, color: '#0f172a', lineHeight: 1.2, letterSpacing: '-0.02em' }}>
           {pageMeta.title}
@@ -102,18 +186,41 @@ export default function Header() {
         )}
       </div>
 
+      {/* Page title — mobile/tablet */}
+      <div className="min-w-0 lg:hidden" style={{ maxWidth: '46%' }}>
+        <p style={{ fontSize: 13, fontWeight: 700, color: '#0f172a', lineHeight: 1.2, letterSpacing: '-0.02em', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', margin: 0 }}>
+          {pageMeta.title}
+        </p>
+      </div>
+
       {/* Divider */}
       <div className="hidden lg:block shrink-0" style={{ width: 1, height: 28, background: 'linear-gradient(180deg, transparent, rgba(59,130,246,0.2), transparent)' }} />
 
       {/* Search */}
-      <div style={{ flex: 1, maxWidth: 340 }}>
-        <div style={{ position: 'relative' }}>
+      <div className="hidden sm:block" style={{ flex: 1, maxWidth: 340, minWidth: 0 }}>
+        <form onSubmit={submitSearch} style={{ position: 'relative' }}>
           <Search size={14} style={{ position: 'absolute', left: 11, top: '50%', transform: 'translateY(-50%)', color: '#94a3b8' }} />
           <input
             type="text"
             value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
+            onChange={(e) => {
+              const value = e.target.value;
+              setSearchQuery(value);
+              setSearchOpen(true);
+              if (value.trim().length < 2) {
+                searchRequestRef.current += 1;
+                setSearchResults([]);
+                setSearchLoading(false);
+                setSearchError('');
+                setSearchOpen(false);
+              }
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Escape') setSearchOpen(false);
+            }}
             placeholder="Search cities, districts…"
+            aria-label="Search cities and traffic locations"
+            autoComplete="off"
             style={{
               width: '100%',
               paddingLeft: 34, paddingRight: 14,
@@ -125,21 +232,62 @@ export default function Header() {
               transition: 'border-color 0.2s, box-shadow 0.2s, background 0.2s',
             }}
             onFocus={(e) => {
+              if (searchQuery.trim().length >= 2) setSearchOpen(true);
               e.currentTarget.style.borderColor = '#3b82f6';
               e.currentTarget.style.background = '#fff';
               e.currentTarget.style.boxShadow = '0 0 0 3px rgba(59,130,246,0.12), 0 0 12px rgba(59,130,246,0.08)';
             }}
             onBlur={(e) => {
+              window.setTimeout(() => setSearchOpen(false), 150);
               e.currentTarget.style.borderColor = '#e2e8f0';
               e.currentTarget.style.background = '#f8fafc';
               e.currentTarget.style.boxShadow = 'none';
             }}
           />
-        </div>
+          {searchOpen && searchQuery.trim().length >= 2 && (
+            <div style={{
+              position: 'absolute', top: 'calc(100% + 6px)', left: 0, right: 0,
+              zIndex: 50, borderRadius: 11, overflow: 'hidden',
+              background: '#fff', border: '1px solid #dbeafe',
+              boxShadow: '0 12px 28px rgba(15,23,42,0.16)',
+            }}>
+              {searchLoading && (
+                <div style={{ padding: '11px 13px', fontSize: 12, color: '#64748b' }}>Searching…</div>
+              )}
+              {!searchLoading && searchError && (
+                <div style={{ padding: '11px 13px', fontSize: 12, color: '#dc2626' }}>{searchError}</div>
+              )}
+              {!searchLoading && !searchError && searchResults.length === 0 && (
+                <div style={{ padding: '11px 13px', fontSize: 12, color: '#64748b' }}>
+                  No matching traffic locations
+                </div>
+              )}
+              {!searchLoading && searchResults.map((result) => (
+                <button
+                  type="button"
+                  key={result.location}
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => openLocation(result.location)}
+                  style={{
+                    width: '100%', padding: '9px 12px', border: 'none',
+                    borderBottom: '1px solid #f1f5f9', background: '#fff',
+                    cursor: 'pointer', textAlign: 'left',
+                    display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                  }}
+                >
+                  <span style={{ fontSize: 12.5, fontWeight: 600, color: '#334155' }}>{result.location}</span>
+                  <span style={{ fontSize: 10.5, color: '#64748b', textTransform: 'capitalize' }}>
+                    {result.congestion_level || 'unknown'}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
+        </form>
       </div>
 
       {/* Right-side controls */}
-      <div className="flex items-center gap-2 ml-auto">
+      <div className="flex items-center gap-1 sm:gap-2 ml-auto shrink-0">
         {/* WS Status */}
         <div
           className="hidden sm:flex items-center gap-1.5"
@@ -165,14 +313,14 @@ export default function Header() {
         </div>
 
         {/* Latency badge */}
-        <div className="hidden md:flex items-center gap-1.5" style={{ fontSize: 11.5, color: '#64748b' }}>
+        <div className="hidden md:flex items-center gap-1.5" style={{ fontSize: 11.5, color: '#64748b' }} title={isConnected ? 'Backend reachable' : 'Backend unreachable at NEXT_PUBLIC_API_URL'}>
           {isConnected ? <Wifi size={12} color="#3b82f6" /> : <WifiOff size={12} color="#ef4444" />}
-          <span style={{ fontFamily: 'monospace', fontWeight: 700, color: '#3b82f6', textShadow: '0 0 8px rgba(59,130,246,0.4)' }}>
-            {latency}ms
+          <span style={{ fontFamily: 'monospace', fontWeight: 700, color: isConnected ? '#3b82f6' : '#ef4444', textShadow: isConnected ? '0 0 8px rgba(59,130,246,0.4)' : 'none' }}>
+            {isConnected ? `${latency}ms` : '—'}
           </span>
         </div>
 
-        <div style={{ width: 1, height: 22, background: 'linear-gradient(180deg, transparent, rgba(59,130,246,0.15), transparent)', margin: '0 2px' }} />
+        <div className="hidden sm:block" style={{ width: 1, height: 22, background: 'linear-gradient(180deg, transparent, rgba(59,130,246,0.15), transparent)', margin: '0 2px' }} />
 
         {/* Notifications */}
         <Link
@@ -248,9 +396,9 @@ export default function Header() {
               {initials}
             </div>
             <span className="hidden sm:block" style={{ fontSize: 13, fontWeight: 600, color: '#334155' }}>
-              {user?.full_name?.split(' ')[0] || 'User'}
+              {displayName}
             </span>
-            <ChevronDown size={13} color="#94a3b8" />
+            <ChevronDown className="hidden sm:block" size={13} color="#94a3b8" />
           </button>
 
           {showUserMenu && (
@@ -283,7 +431,7 @@ export default function Header() {
                       {initials}
                     </div>
                     <div>
-                      <p style={{ fontSize: 13, fontWeight: 700, color: '#0f172a' }}>{user?.full_name}</p>
+                      <p style={{ fontSize: 13, fontWeight: 700, color: '#0f172a' }}>{user?.full_name || displayName}</p>
                       <p style={{ fontSize: 11, color: '#94a3b8', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', maxWidth: 130 }}>{user?.email}</p>
                     </div>
                   </div>

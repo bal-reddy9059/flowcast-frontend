@@ -5,7 +5,7 @@ import {
   Flame, TrendingUp, TrendingDown, Minus, RefreshCw,
   MapPin, Download, AlertTriangle, ChevronDown, Clock,
 } from 'lucide-react';
-import api from '@/lib/api';
+import { heatmapApi } from '@/lib/api';
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -49,7 +49,7 @@ const SORT_OPTIONS: { v: SortMode; l: string }[]         = [
   { v: 'name',      l: 'Name'      },
 ];
 const LIMIT_OPTIONS                                      = [10, 25, 50];
-const REFRESH_SECS                                       = 30;
+const REFRESH_SECS                                       = 60;
 
 const INDIA_PATH = `M 180 30 L 200 25 L 230 30 L 260 20 L 290 25 L 310 35 L 340 30 L 360 50
   L 380 60 L 400 55 L 420 70 L 430 90 L 440 110 L 450 130 L 460 150 L 470 170
@@ -164,6 +164,10 @@ function exportCSV(hotspots: Hotspot[]) {
   URL.revokeObjectURL(url);
 }
 
+function sevCountFallback(list: Hotspot[]) {
+  return list.filter((h) => h.severity === 'critical').length;
+}
+
 // ── Sub-components ────────────────────────────────────────────────────────────
 
 function TrendBadge({ trend }: { trend?: string }) {
@@ -202,14 +206,17 @@ function LoadingSkeleton() {
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function HeatmapPage() {
+  const [mapPoints,   setMapPoints]   = useState<Hotspot[]>(STUB_HOTSPOTS);
   const [allHotspots, setAllHotspots] = useState<Hotspot[]>(STUB_HOTSPOTS);
   const [summary,     setSummary]     = useState<Summary>(STUB_SUMMARY);
   const [selected,    setSelected]    = useState<Hotspot | null>(null);
   const [isLoading,   setIsLoading]   = useState(false);
   const [error,       setError]       = useState<string | null>(null);
+  const [fromApi,     setFromApi]     = useState(false);
   const [filter,      setFilter]      = useState<SeverityFilter>('all');
   const [sortMode,    setSortMode]    = useState<SortMode>('intensity');
   const [limit,       setLimit]       = useState(25);
+  const [hours,       setHours]       = useState(6);
   const [countdown,   setCountdown]   = useState(REFRESH_SECS);
   const [lastUpdated, setLastUpdated] = useState('');
   const [showSort,    setShowSort]    = useState(false);
@@ -217,28 +224,79 @@ export default function HeatmapPage() {
 
   const fetchRef = useRef<() => Promise<void>>(async () => {});
 
+  const extractList = (data: unknown): unknown[] => {
+    if (Array.isArray(data)) return data;
+    if (!data || typeof data !== 'object') return [];
+    const obj = data as Record<string, unknown>;
+    const raw =
+      obj.points ??
+      obj.hotspots ??
+      obj.top_congested ??
+      obj.data ??
+      obj.items ??
+      obj.results ??
+      obj.heatmap;
+    return Array.isArray(raw) ? raw : [];
+  };
+
   const fetchData = useCallback(async () => {
     setIsLoading(true);
     setError(null);
     try {
-      const [hotRes, sumRes] = await Promise.all([
-        api.get('/traffic/heatmap/hotspots', { params: { limit } }),
-        api.get('/traffic/heatmap/summary'),
+      const [heatmapRes, hotRes, sumRes] = await Promise.allSettled([
+        heatmapApi.get({ hours, limit: Math.max(limit, 50) }),
+        heatmapApi.hotspots({ limit }),
+        heatmapApi.summary(),
       ]);
-      // Accept `hotspots` (new backend key) or `top_congested` (legacy)
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const raw: any[] = hotRes.data?.hotspots ?? hotRes.data?.top_congested ?? [];
-      if (raw.length) setAllHotspots(raw.map(normaliseHotspot));
-      if (hotRes.data?.generated_at) {
-        try { setLastUpdated(new Date(hotRes.data.generated_at).toLocaleTimeString()); } catch { /* ok */ }
+
+      const heatData = heatmapRes.status === 'fulfilled' ? heatmapRes.value.data : null;
+      const hotData = hotRes.status === 'fulfilled' ? hotRes.value.data : null;
+      const sumData = sumRes.status === 'fulfilled' ? sumRes.value.data : null;
+
+      const heatPoints = extractList(heatData).map(normaliseHotspot);
+      const hotspots = extractList(hotData).map(normaliseHotspot);
+
+      if (heatPoints.length) setMapPoints(heatPoints);
+      if (hotspots.length) {
+        setAllHotspots(hotspots);
+      } else if (heatPoints.length) {
+        // Fallback: use heatmap points for list if hotspots endpoint returns empty
+        setAllHotspots(heatPoints.slice(0, limit));
       }
-      if (sumRes.data) setSummary((p) => ({ ...p, ...sumRes.data }));
+
+      if (heatPoints.length || hotspots.length || sumData) setFromApi(true);
+
+      const generatedAt =
+        (hotData as { generated_at?: string } | null)?.generated_at ??
+        (heatData as { generated_at?: string } | null)?.generated_at ??
+        (sumData as { generated_at?: string } | null)?.generated_at;
+      if (generatedAt) {
+        try { setLastUpdated(new Date(generatedAt).toLocaleTimeString()); }
+        catch { setLastUpdated(new Date().toLocaleTimeString()); }
+      } else if (heatPoints.length || hotspots.length) {
+        setLastUpdated(new Date().toLocaleTimeString());
+      }
+
+      if (sumData && typeof sumData === 'object') {
+        const s = sumData as Summary & Record<string, number | string | undefined>;
+        const pointsForFallback = hotspots.length ? hotspots : heatPoints;
+        const dataPoints =
+          s.data_points ?? s.points ?? s.total_monitored_locations ?? heatPoints.length ?? STUB_SUMMARY.data_points;
+        setSummary({
+          total_vehicles: Number(s.total_vehicles ?? s.vehicles ?? STUB_SUMMARY.total_vehicles),
+          avg_congestion: Number(s.avg_congestion ?? s.average_congestion ?? s.avg_intensity ?? STUB_SUMMARY.avg_congestion),
+          critical_zones: Number(s.critical_zones ?? s.critical_count ?? sevCountFallback(pointsForFallback)),
+          data_points: Number(dataPoints || 0),
+          total_monitored_locations: Number(s.total_monitored_locations ?? s.data_points ?? heatPoints.length) || undefined,
+          coverage_area: s.coverage_area ? String(s.coverage_area) : undefined,
+        });
+      }
     } catch {
-      setError('Could not reach the server — showing last cached data.');
+      setError('Could not reach heatmap APIs — showing last cached data.');
     } finally {
       setIsLoading(false);
     }
-  }, [limit]);
+  }, [limit, hours]);
 
   useEffect(() => { fetchRef.current = fetchData; }, [fetchData]);
   useEffect(() => { void fetchData(); }, [fetchData]);
@@ -257,14 +315,15 @@ export default function HeatmapPage() {
     return () => clearInterval(t);
   }, []);
 
-  // Severity counts from the full unfiltered set
+  // Severity counts for chips — prefer full heatmap field when available
   const sevCounts = useMemo(() => {
-    const c: Record<SeverityFilter, number> = { all: allHotspots.length, critical: 0, high: 0, moderate: 0, low: 0 };
-    allHotspots.forEach((h) => { c[h.severity] = (c[h.severity] ?? 0) + 1; });
+    const source = mapPoints.length ? mapPoints : allHotspots;
+    const c: Record<SeverityFilter, number> = { all: source.length, critical: 0, high: 0, moderate: 0, low: 0 };
+    source.forEach((h) => { c[h.severity] = (c[h.severity] ?? 0) + 1; });
     return c;
-  }, [allHotspots]);
+  }, [mapPoints, allHotspots]);
 
-  // Apply filter + sort for display list
+  // List filtered + sorted client-side (no API refetch on chip change)
   const displayed = useMemo(() => {
     const list = filter === 'all'
       ? [...allHotspots]
@@ -274,9 +333,15 @@ export default function HeatmapPage() {
     return list.sort((a, b) => b.score - a.score);
   }, [allHotspots, filter, sortMode]);
 
+  const mapDots = useMemo(() => {
+    if (filter === 'all') return mapPoints;
+    return mapPoints.filter((h) => h.severity === filter);
+  }, [mapPoints, filter]);
+
   const avgCong  = summary.avg_congestion ?? 0;
   const totalVeh = summary.total_vehicles ?? 0;
-  const dpCount  = summary.data_points ?? summary.total_monitored_locations ?? 766;
+  const dpCount  = (summary.data_points ?? summary.total_monitored_locations ?? mapPoints.length) || 766;
+  const criticalZones = summary.critical_zones ?? sevCounts.critical;
 
   // Close dropdowns when clicking outside
   useEffect(() => {
@@ -299,7 +364,7 @@ export default function HeatmapPage() {
             <div>
               <h1 className="gradient-text-neon" style={{ fontWeight: 800, fontSize: 22, margin: 0 }}>Traffic Heatmap</h1>
               <p style={{ color: 'rgba(255,255,255,0.55)', fontSize: 13, marginTop: 3 }}>
-                Congestion intensity across {dpCount.toLocaleString()} districts · India-wide view
+                Congestion intensity across {dpCount.toLocaleString()} districts · {fromApi ? 'live heatmap APIs' : 'demo data'} · {hours}h window
               </p>
             </div>
           </div>
@@ -310,6 +375,18 @@ export default function HeatmapPage() {
                 <Clock size={12} /> Updated {lastUpdated}
               </span>
             )}
+
+            {/* Hours window for GET /traffic/heatmap */}
+            <select
+              value={hours}
+              onChange={(e) => setHours(Number(e.target.value))}
+              className="btn-neon"
+              style={{ padding: '7px 10px', borderRadius: 10, fontSize: 12.5, fontWeight: 600, cursor: 'pointer' }}
+            >
+              {[1, 3, 6, 12, 24].map((h) => (
+                <option key={h} value={h}>{h}h heatmap</option>
+              ))}
+            </select>
 
             {/* Sort dropdown */}
             <div style={{ position: 'relative' }} onClick={(e) => e.stopPropagation()}>
@@ -402,9 +479,9 @@ export default function HeatmapPage() {
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
         {[
           { label: 'Total Vehicles',  value: totalVeh.toLocaleString(),               color: '#2563eb', sub: 'across India',   glowClass: 'icon-glow-blue'   },
-          { label: 'Avg Congestion',  value: `${(avgCong * 100).toFixed(0)}%`,          color: heatColor(avgCong), sub: 'network-wide', glowClass: 'icon-glow-orange' },
-          { label: 'Critical Zones',  value: sevCounts.critical.toString(),             color: '#ef4444', sub: 'intensity ≥ 80%', glowClass: 'icon-glow-red'  },
-          { label: 'Districts',       value: dpCount.toLocaleString(),                  color: '#8b5cf6', sub: 'monitored',       glowClass: 'icon-glow-purple' },
+          { label: 'Avg Congestion',  value: `${(avgCong * 100).toFixed(0)}%`,          color: heatColor(avgCong), sub: 'from /summary', glowClass: 'icon-glow-orange' },
+          { label: 'Critical Zones',  value: String(criticalZones),                     color: '#ef4444', sub: 'intensity ≥ 80%', glowClass: 'icon-glow-red'  },
+          { label: 'Districts',       value: dpCount.toLocaleString(),                  color: '#8b5cf6', sub: 'from heatmap',     glowClass: 'icon-glow-purple' },
         ].map(({ label, value, color, sub }) => (
           <div key={label} className="neon-card" style={{ padding: '16px 18px' }}>
             <p style={{ fontSize: 26, fontWeight: 800, color, lineHeight: 1 }}>{value}</p>
@@ -474,9 +551,9 @@ export default function HeatmapPage() {
               {/* India outline */}
               <path d={INDIA_PATH} fill="none" stroke="#e2e8f0" strokeWidth="1.5" />
 
-              {/* Glow blobs — dim non-matching when filter is active */}
-              {allHotspots.map((h, i) => {
-                const active = filter === 'all' || h.severity === filter;
+              {/* Glow blobs from GET /traffic/heatmap */}
+              {mapDots.map((h, i) => {
+                const active = true;
                 return (
                   <circle
                     key={`glow-${i}`}
@@ -489,31 +566,27 @@ export default function HeatmapPage() {
               })}
 
               {/* Hotspot dots */}
-              {allHotspots.map((h, i) => {
-                const active     = filter === 'all' || h.severity === filter;
+              {mapDots.map((h, i) => {
+                const active     = true;
                 const isSelected = selected?.name === h.name;
                 const r          = h.score * 10 + 5;
                 return (
                   <g key={`dot-${h.name}-${i}`} style={{ cursor: 'pointer' }} onClick={() => setSelected(isSelected ? null : h)}>
-                    {/* Animated pulse for critical */}
                     {h.severity === 'critical' && active && (
                       <circle cx={`${h.x}%`} cy={`${h.y}%`} r={r + 8} fill="none" stroke={heatColor(h.score, 0.45)} strokeWidth="1.2">
                         <animate attributeName="r"              values={`${r + 4};${r + 16};${r + 4}`} dur="2s"   repeatCount="indefinite" />
                         <animate attributeName="stroke-opacity" values="0.6;0;0.6"                     dur="2s"   repeatCount="indefinite" />
                       </circle>
                     )}
-                    {/* Slower pulse for high */}
                     {h.severity === 'high' && active && (
                       <circle cx={`${h.x}%`} cy={`${h.y}%`} r={r + 6} fill="none" stroke={heatColor(h.score, 0.3)} strokeWidth="0.8">
                         <animate attributeName="r"              values={`${r + 3};${r + 11};${r + 3}`} dur="2.8s" repeatCount="indefinite" />
                         <animate attributeName="stroke-opacity" values="0.4;0;0.4"                     dur="2.8s" repeatCount="indefinite" />
                       </circle>
                     )}
-                    {/* Selection ring */}
                     {isSelected && (
                       <circle cx={`${h.x}%`} cy={`${h.y}%`} r={r + 6} fill="none" stroke="#3b82f6" strokeWidth="2" strokeDasharray="4 3" />
                     )}
-                    {/* Core dot */}
                     <circle
                       cx={`${h.x}%`} cy={`${h.y}%`} r={r}
                       fill={heatColor(h.score, active ? (isSelected ? 1 : 0.88) : 0.18)}

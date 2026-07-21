@@ -1,14 +1,14 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import {
   AlertTriangle, Construction, Ban, Droplets, ShieldCheck,
   ThumbsUp, ThumbsDown, Plus, Clock, MapPin, RefreshCw, X, CheckCircle2,
   Sparkles,
 } from 'lucide-react';
-import api from '@/lib/api';
+import { incidentsApi } from '@/lib/api';
+import type { CommunityIncident } from '@/lib/types';
 
-/* ── Type catalogue — matches all backend incident_type values ── */
 const TYPES = [
   { id: 'accident', label: 'Accident',      Icon: AlertTriangle, color: '#ef4444', bg: '#fef2f2' },
   { id: 'roadwork', label: 'Roadwork',      Icon: Construction,  color: '#f59e0b', bg: '#fffbeb' },
@@ -20,16 +20,17 @@ const TYPES = [
 
 const CITIES = ['Mumbai', 'Delhi', 'Bangalore', 'Hyderabad', 'Chennai', 'Kolkata', 'Pune', 'Ahmedabad'];
 
-/* ── Severity mapping: backend labels → frontend labels ── */
 const SEV_MAP: Record<string, string> = {
-  minor:    'low',
+  minor: 'low',
   moderate: 'medium',
-  major:    'high',
-  severe:   'high',
+  major: 'high',
+  severe: 'high',
   critical: 'critical',
+  low: 'low',
+  medium: 'medium',
+  high: 'high',
 };
 
-/* ── City lookup from lat/lon (approximate bounding boxes) ── */
 function cityFromCoords(lat?: number | null, lon?: number | null): string {
   if (lat == null || lon == null) return '';
   if (lat >= 12.8 && lat <= 13.2 && lon >= 77.4 && lon <= 77.8) return 'Bangalore';
@@ -40,57 +41,70 @@ function cityFromCoords(lat?: number | null, lon?: number | null): string {
   if (lat >= 22.4 && lat <= 22.7 && lon >= 88.2 && lon <= 88.5) return 'Kolkata';
   if (lat >= 18.4 && lat <= 18.7 && lon >= 73.7 && lon <= 74.0) return 'Pune';
   if (lat >= 22.9 && lat <= 23.2 && lon >= 72.4 && lon <= 72.8) return 'Ahmedabad';
-  if (lat >= 26.8 && lat <= 27.0 && lon >= 75.7 && lon <= 75.9) return 'Jaipur';
-  if (lat >= 26.7 && lat <= 27.0 && lon >= 80.8 && lon <= 81.1) return 'Lucknow';
-  if (lat >= 21.0 && lat <= 21.3 && lon >= 79.0 && lon <= 79.2) return 'Nagpur';
-  if (lat >= 22.6 && lat <= 22.8 && lon >= 88.3 && lon <= 88.5) return 'Kolkata';
   return '';
 }
 
-/* ── Fix UTF-8 mojibake that the backend seeds contain ── */
 function fixEncoding(s: string): string {
   return s
     .replace(/â€"/g, '—')
     .replace(/â€™/g, '’')
     .replace(/â€œ/g, '“')
     .replace(/â€/g, '”')
-    .replace(/â€"/g, '–')
     .replace(/Â /g, ' ');
 }
 
-/* ── Normalise a raw backend incident into the shape the UI expects ── */
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function normalizeIncident(raw: any): Incident {
+function apiError(e: unknown) {
+  const err = e as { response?: { data?: { error?: string; detail?: string } }; message?: string };
+  return err.response?.data?.error || err.response?.data?.detail || err.message || 'Request failed';
+}
+
+interface UiIncident {
+  key: string;
+  apiId: string;
+  type: string;
+  description: string;
+  location: string;
+  city: string;
+  severity: string;
+  upvotes: number;
+  downvotes: number;
+  community_score: number;
+  reported_by: string;
+  created_at: string;
+  expires_at?: string | null;
+  verified: boolean;
+  is_active: boolean;
+}
+
+function normalizeIncident(raw: CommunityIncident | Record<string, unknown>): UiIncident {
+  const r = raw as CommunityIncident & Record<string, unknown>;
+  const uuid = String(r.incident_uuid ?? r.id ?? '');
+  const numeric = r.id != null ? String(r.id) : uuid;
   return {
-    id:          String(raw.incident_uuid ?? raw.id),
-    type:        String(raw.incident_type ?? raw.type ?? 'accident').toLowerCase(),
-    description: fixEncoding(String(raw.description ?? '')),
-    location:    String(raw.location ?? ''),
-    city:        String(raw.city ?? cityFromCoords(raw.latitude, raw.longitude)),
-    severity:    SEV_MAP[String(raw.severity ?? 'low').toLowerCase()] ?? String(raw.severity ?? 'low'),
-    upvotes:     Number(raw.upvotes ?? raw.upvote_count ?? 0),
-    downvotes:   Number(raw.downvotes ?? raw.downvote_count ?? 0),
-    reported_by: (() => { const r = String(raw.reported_by ?? 'Community'); return r === 'system' ? 'FlowCast' : r; })(),
-    created_at:  String(raw.reported_at ?? raw.created_at ?? new Date().toISOString()),
-    verified:    Boolean(raw.verified ?? (Number(raw.community_score ?? 0) >= 5)),
+    key: uuid || numeric,
+    apiId: uuid || numeric,
+    type: String(r.incident_type ?? r.type ?? 'accident').toLowerCase(),
+    description: fixEncoding(String(r.description ?? '')),
+    location: String(r.location ?? ''),
+    city: String(r.city ?? cityFromCoords(r.latitude, r.longitude)),
+    severity: SEV_MAP[String(r.severity ?? 'moderate').toLowerCase()] ?? 'medium',
+    upvotes: Number(r.upvotes ?? 0),
+    downvotes: Number(r.downvotes ?? 0),
+    community_score: Number(r.community_score ?? (Number(r.upvotes ?? 0) - Number(r.downvotes ?? 0))),
+    reported_by: (() => {
+      const reported = String(r.reported_by ?? 'Community');
+      return reported === 'system' ? 'FlowCast' : reported.length > 12 ? `${reported.slice(0, 8)}…` : reported;
+    })(),
+    created_at: String(r.reported_at ?? r.created_at ?? new Date().toISOString()),
+    expires_at: (r.expires_at as string | null | undefined) ?? null,
+    verified: Boolean(r.verified ?? (Number(r.community_score ?? 0) >= 5)),
+    is_active: r.is_active !== false,
   };
 }
 
-interface Incident {
-  id: string; type: string; description: string; location: string; city: string;
-  severity: string; upvotes: number; downvotes: number; reported_by: string;
-  created_at: string; verified: boolean;
-}
-
-/* ── Fallback stub used only when backend is completely unreachable ── */
-const STUB: Incident[] = [
-  { id: 's1', type: 'accident', description: 'Multi-vehicle collision, partial lane closure', location: 'Western Express Highway, Andheri', city: 'Mumbai', severity: 'high', upvotes: 23, downvotes: 1, reported_by: 'Community', created_at: new Date(Date.now() - 3 * 60000).toISOString(), verified: true },
-  { id: 's2', type: 'roadwork', description: 'Metro Phase 3 construction — single-lane traffic', location: 'Outer Ring Road, Marathahalli', city: 'Bangalore', severity: 'medium', upvotes: 15, downvotes: 0, reported_by: 'Community', created_at: new Date(Date.now() - 18 * 60000).toISOString(), verified: false },
-  { id: 's3', type: 'event', description: 'Cultural event causing parking overflow', location: 'Koramangala 5th Block', city: 'Bangalore', severity: 'low', upvotes: 5, downvotes: 0, reported_by: 'Community', created_at: new Date(Date.now() - 45 * 60000).toISOString(), verified: false },
-];
-
 function rel(iso: string) {
   const d = (Date.now() - new Date(iso).getTime()) / 1000;
+  if (Number.isNaN(d)) return '—';
   if (d < 60) return 'just now';
   if (d < 3600) return `${Math.floor(d / 60)}m ago`;
   if (d < 86400) return `${Math.floor(d / 3600)}h ago`;
@@ -99,89 +113,179 @@ function rel(iso: string) {
 
 const SEV: Record<string, { color: string; bg: string; label: string }> = {
   critical: { color: '#dc2626', bg: '#fef2f2', label: 'Critical' },
-  high:     { color: '#dc2626', bg: '#fef2f2', label: 'High' },
-  medium:   { color: '#d97706', bg: '#fffbeb', label: 'Medium' },
-  low:      { color: '#16a34a', bg: '#f0fdf4', label: 'Low' },
+  high: { color: '#dc2626', bg: '#fef2f2', label: 'High' },
+  medium: { color: '#d97706', bg: '#fffbeb', label: 'Medium' },
+  low: { color: '#16a34a', bg: '#f0fdf4', label: 'Low' },
 };
 
 export default function IncidentsPage() {
-  const [incidents, setIncidents] = useState<Incident[]>([]);
+  const [incidents, setIncidents] = useState<UiIncident[]>([]);
   const [loading, setLoading] = useState(true);
-  const [usingStub, setUsingStub] = useState(false);
+  const [error, setError] = useState('');
+  const [toast, setToast] = useState('');
   const [showForm, setShowForm] = useState(false);
   const [activeFilter, setActiveFilter] = useState('all');
-  const [form, setForm] = useState({ type: 'accident', description: '', location: '', city: 'Mumbai', severity: 'medium' });
+  const [form, setForm] = useState({
+    type: 'accident',
+    description: '',
+    location: '',
+    city: 'Hyderabad',
+    severity: 'moderate',
+  });
   const [submitting, setSubmitting] = useState(false);
-  const [votes, setVotes] = useState<Record<string, 'up' | 'down'>>({});
+  /** One vote per user — mirrors backend incident_votes */
+  const [myVotes, setMyVotes] = useState<Record<string, 'up' | 'down'>>({});
+  const [voteBusy, setVoteBusy] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
-  const [submitted, setSubmitted] = useState(false);
+  const [generatedAt, setGeneratedAt] = useState<string | null>(null);
+  const [selectedDetail, setSelectedDetail] = useState<UiIncident | null>(null);
 
-  const fetchData = async (isRefresh = false) => {
-    isRefresh ? setRefreshing(true) : setLoading(true);
-    try {
-      const r = await api.get('/incidents');
-      const raw: unknown[] = Array.isArray(r.data?.incidents) ? r.data.incidents : [];
-      setIncidents(raw.map(normalizeIncident));
-      setUsingStub(false);
-    } catch {
-      if (!isRefresh) {
-        setIncidents(STUB);
-        setUsingStub(true);
-      }
-    } finally {
-      isRefresh ? setRefreshing(false) : setLoading(false);
-    }
+  const showToast = (msg: string) => {
+    setToast(msg);
+    setTimeout(() => setToast(''), 3200);
   };
 
-  useEffect(() => { void fetchData(false); }, []);
+  const fetchData = useCallback(async (isRefresh = false) => {
+    if (isRefresh) setRefreshing(true);
+    else setLoading(true);
+    setError('');
+    try {
+      const r = await incidentsApi.list();
+      setIncidents(r.data.incidents.map(normalizeIncident));
+      setGeneratedAt(r.data.generated_at ?? null);
+    } catch (e) {
+      setError(apiError(e));
+      if (!isRefresh) setIncidents([]);
+    } finally {
+      if (isRefresh) setRefreshing(false);
+      else setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { void fetchData(false); }, [fetchData]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!form.description.trim() || !form.location.trim()) return;
     setSubmitting(true);
+    setError('');
     try {
-      const r = await api.post('/incidents', {
+      const location = form.location.includes(form.city)
+        ? form.location.trim()
+        : `${form.location.trim()}, ${form.city}`;
+      const r = await incidentsApi.create({
         incident_type: form.type,
-        description:   form.description,
-        location:      form.location,
-        city:          form.city,
-        severity:      form.severity,
+        description: form.description.trim(),
+        location,
+        severity: form.severity,
+        city: form.city,
       });
-      setIncidents(p => [normalizeIncident(r.data), ...p]);
+      const created = normalizeIncident(r.data.incident);
+      setIncidents((p) => [created, ...p.filter((i) => i.key !== created.key)]);
+      // Reporter's implicit upvote is a real vote row
+      setMyVotes((v) => ({ ...v, [created.key]: 'up' }));
+      showToast(r.data.message || 'Incident reported successfully');
+      setForm({ type: 'accident', description: '', location: '', city: 'Hyderabad', severity: 'moderate' });
+      setShowForm(false);
+    } catch (err) {
+      setError(apiError(err));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const applyVoteCounts = (key: string, upvotes: number, downvotes: number, community_score?: number) => {
+    setIncidents((items) => items.map((inc) => (
+      inc.key === key
+        ? {
+            ...inc,
+            upvotes,
+            downvotes,
+            community_score: community_score ?? (upvotes - downvotes),
+            verified: (community_score ?? (upvotes - downvotes)) >= 5,
+          }
+        : inc
+    )));
+    setSelectedDetail((cur) => (
+      cur?.key === key
+        ? {
+            ...cur,
+            upvotes,
+            downvotes,
+            community_score: community_score ?? (upvotes - downvotes),
+          }
+        : cur
+    ));
+  };
+
+  const handleVote = async (inc: UiIncident, dir: 'up' | 'down') => {
+    if (voteBusy === inc.key) return;
+    setVoteBusy(inc.key);
+    setError('');
+    try {
+      const r = dir === 'up'
+        ? await incidentsApi.upvote(inc.apiId)
+        : await incidentsApi.downvote(inc.apiId);
+      const { upvotes, downvotes, community_score, changed, resolved, message } = r.data;
+
+      applyVoteCounts(inc.key, upvotes, downvotes, community_score);
+
+      if (resolved) {
+        setIncidents((items) => items.filter((i) => i.key !== inc.key));
+        setSelectedDetail(null);
+        setMyVotes((v) => {
+          const n = { ...v };
+          delete n[inc.key];
+          return n;
+        });
+        showToast(message || 'Incident resolved by community');
+        return;
+      }
+
+      if (changed === false) {
+        // Repeat same vote — no-op; keep selection, counts unchanged
+        setMyVotes((v) => ({ ...v, [inc.key]: dir }));
+        showToast(message || (dir === 'up' ? 'Already upvoted' : 'Already downvoted'));
+      } else {
+        // New vote or switch
+        setMyVotes((v) => ({ ...v, [inc.key]: dir }));
+        showToast(message || (dir === 'up' ? 'Upvoted' : 'Downvoted'));
+      }
+    } catch (err) {
+      setError(apiError(err));
+    } finally {
+      setVoteBusy(null);
+    }
+  };
+
+  const openIncident = async (incident: UiIncident) => {
+    setSelectedDetail(incident);
+    try {
+      const r = await incidentsApi.get(incident.apiId);
+      const next = normalizeIncident(r.data);
+      setSelectedDetail(next);
+      setIncidents((items) => items.map((i) => (i.key === next.key ? next : i)));
     } catch {
-      const optimistic: Incident = {
-        ...form,
-        id: String(Date.now()),
-        upvotes: 0, downvotes: 0,
-        reported_by: 'You',
-        created_at: new Date().toISOString(),
-        verified: false,
-      };
-      setIncidents(p => [optimistic, ...p]);
+      /* keep list row */
     }
-    setForm({ type: 'accident', description: '', location: '', city: 'Mumbai', severity: 'medium' });
-    setShowForm(false);
-    setSubmitting(false);
-    setSubmitted(true);
-    setTimeout(() => setSubmitted(false), 3000);
   };
 
-  const handleVote = async (id: string, dir: 'up' | 'down') => {
-    if (votes[id] === dir) {
-      setVotes(v => { const n = { ...v }; delete n[id]; return n; });
-      return;
+  const resolveIncident = async (inc: UiIncident) => {
+    try {
+      await incidentsApi.resolve(inc.apiId);
+      setIncidents((items) => items.filter((i) => i.key !== inc.key));
+      setSelectedDetail(null);
+      showToast('Incident resolved');
+    } catch (err) {
+      setError(apiError(err));
     }
-    setVotes(v => ({ ...v, [id]: dir }));
-    try { await api.post(`/incidents/${id}/${dir}vote`); } catch { /* optimistic */ }
   };
 
-  const filtered = incidents.filter(i => activeFilter === 'all' || i.type === activeFilter);
-  const typeOf = (t: string) => TYPES.find(x => x.id === t) ?? TYPES[0];
+  const filtered = incidents.filter((i) => activeFilter === 'all' || i.type === activeFilter);
+  const typeOf = (t: string) => TYPES.find((x) => x.id === t) ?? TYPES[0];
 
   return (
     <div className="slide-up" style={{ display: 'flex', flexDirection: 'column', gap: 20 }}>
-
-      {/* ── Hero Banner ── */}
       <div className="page-hero" style={{ padding: '28px 32px' }}>
         <div style={{ position: 'relative', zIndex: 1 }}>
           <div className="flex items-start justify-between flex-wrap gap-3">
@@ -190,12 +294,18 @@ export default function IncidentsPage() {
                 Crowdsourced Incidents
               </h1>
               <p style={{ fontSize: 13, color: '#94a3b8', marginTop: 5 }}>
-                Community-reported traffic events — upvote to verify, downvote to dismiss
+                One vote per user — upvote confirms, downvote switches or clears
               </p>
+              {generatedAt && (
+                <p style={{ fontSize: 11, color: '#94a3b8', marginTop: 4 }}>
+                  Feed generated {rel(generatedAt)} (IST)
+                </p>
+              )}
             </div>
             <div className="flex items-center gap-2">
               <button
-                onClick={() => fetchData(true)} disabled={refreshing}
+                onClick={() => void fetchData(true)}
+                disabled={refreshing}
                 className="btn-neon"
                 style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '7px 13px', borderRadius: 8, fontSize: 12.5, fontWeight: 600, cursor: 'pointer', opacity: refreshing ? 0.6 : 1 }}
               >
@@ -214,15 +324,35 @@ export default function IncidentsPage() {
         </div>
       </div>
 
-      {/* ── Success toast ── */}
-      {submitted && (
+      {toast && (
         <div className="scale-in flex items-center gap-3 neon-badge-green" style={{ padding: '13px 18px', borderRadius: 11 }}>
           <CheckCircle2 size={16} color="#10b981" />
-          <span style={{ fontSize: 13.5, fontWeight: 600 }}>Incident reported successfully! It will appear in the feed after community verification.</span>
+          <span style={{ fontSize: 13.5, fontWeight: 600 }}>{toast}</span>
         </div>
       )}
 
-      {/* ── Report form ── */}
+      {error && (
+        <div style={{ padding: '12px 14px', borderRadius: 11, background: '#fef2f2', border: '1px solid #fecaca', color: '#b91c1c', fontSize: 13 }}>
+          {error}
+        </div>
+      )}
+
+      {selectedDetail && (
+        <div className="neon-card flex items-center justify-between gap-3" style={{ padding: 14 }}>
+          <div>
+            <strong>{selectedDetail.description}</strong>
+            <p style={{ fontSize: 12, color: '#6b7280', margin: '4px 0 0' }}>
+              {selectedDetail.location}
+              {' · '}score {selectedDetail.community_score}
+              {' · '}↑{selectedDetail.upvotes} ↓{selectedDetail.downvotes}
+            </p>
+          </div>
+          <button onClick={() => void resolveIncident(selectedDetail)} className="btn-gradient px-3 py-2 rounded-lg text-xs">
+            Resolve / delete
+          </button>
+        </div>
+      )}
+
       {showForm && (
         <div
           className="scale-in neon-card"
@@ -234,9 +364,7 @@ export default function IncidentsPage() {
               <X size={16} />
             </button>
           </div>
-          <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
-
-            {/* Type */}
+          <form onSubmit={(e) => void handleSubmit(e)} style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
             <div>
               <label style={{ fontSize: 11, fontWeight: 700, color: '#334155', textTransform: 'uppercase', letterSpacing: '0.07em', display: 'block', marginBottom: 8 }}>
                 Incident Type
@@ -244,15 +372,16 @@ export default function IncidentsPage() {
               <div className="flex items-center gap-2 flex-wrap">
                 {TYPES.map(({ id, label, Icon, color, bg }) => (
                   <button
-                    key={id} type="button"
-                    onClick={() => setForm(f => ({ ...f, type: id }))}
+                    key={id}
+                    type="button"
+                    onClick={() => setForm((f) => ({ ...f, type: id }))}
                     style={{
                       display: 'flex', alignItems: 'center', gap: 6,
                       padding: '7px 14px', borderRadius: 10, fontSize: 13, fontWeight: 600,
                       border: `2px solid ${form.type === id ? color : '#e2e8f0'}`,
                       background: form.type === id ? bg : '#fff',
                       color: form.type === id ? color : '#64748b',
-                      cursor: 'pointer', transition: 'all 0.15s',
+                      cursor: 'pointer',
                     }}
                   >
                     <Icon size={13} />{label}
@@ -261,50 +390,50 @@ export default function IncidentsPage() {
               </div>
             </div>
 
-            {/* Description */}
             <div>
               <label style={{ fontSize: 11, fontWeight: 700, color: '#334155', textTransform: 'uppercase', letterSpacing: '0.07em', display: 'block', marginBottom: 6 }}>Description</label>
               <textarea
                 value={form.description}
-                onChange={e => setForm(f => ({ ...f, description: e.target.value }))}
-                placeholder="Describe the incident clearly so other drivers can understand the situation…"
-                required rows={3}
-                style={{ width: '100%', padding: '10px 13px', borderRadius: 10, border: '1.5px solid #e2e8f0', fontSize: 13.5, color: '#0f172a', resize: 'vertical', fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box', transition: 'border-color 0.15s' }}
-                onFocus={e => { e.currentTarget.style.borderColor = '#3b82f6'; e.currentTarget.style.boxShadow = '0 0 0 3px rgba(59,130,246,0.1)'; }}
-                onBlur={e => { e.currentTarget.style.borderColor = '#e2e8f0'; e.currentTarget.style.boxShadow = 'none'; }}
+                onChange={(e) => setForm((f) => ({ ...f, description: e.target.value }))}
+                placeholder="Describe the incident clearly…"
+                required
+                rows={3}
+                style={{ width: '100%', padding: '10px 13px', borderRadius: 10, border: '1.5px solid #e2e8f0', fontSize: 13.5, color: '#0f172a', resize: 'vertical', fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box' }}
               />
             </div>
 
-            {/* Location / City / Severity */}
             <div style={{ display: 'grid', gridTemplateColumns: '2fr 1fr 1fr', gap: 12 }}>
-              {[
-                { key: 'location', label: 'Location', placeholder: 'Road / landmark name', type: 'input' },
-              ].map(({ key, label, placeholder }) => (
-                <div key={key}>
-                  <label style={{ fontSize: 11, fontWeight: 700, color: '#334155', textTransform: 'uppercase', letterSpacing: '0.07em', display: 'block', marginBottom: 6 }}>{label}</label>
-                  <input
-                    value={form[key as keyof typeof form]}
-                    onChange={e => setForm(f => ({ ...f, [key]: e.target.value }))}
-                    placeholder={placeholder} required
-                    style={{ width: '100%', padding: '9px 12px', borderRadius: 10, border: '1.5px solid #e2e8f0', fontSize: 13.5, color: '#0f172a', outline: 'none', boxSizing: 'border-box', transition: 'border-color 0.15s' }}
-                    onFocus={e => { e.currentTarget.style.borderColor = '#3b82f6'; }}
-                    onBlur={e => { e.currentTarget.style.borderColor = '#e2e8f0'; }}
-                  />
-                </div>
-              ))}
+              <div>
+                <label style={{ fontSize: 11, fontWeight: 700, color: '#334155', textTransform: 'uppercase', letterSpacing: '0.07em', display: 'block', marginBottom: 6 }}>Location</label>
+                <input
+                  value={form.location}
+                  onChange={(e) => setForm((f) => ({ ...f, location: e.target.value }))}
+                  placeholder="Road / landmark (e.g. Hitech City)"
+                  required
+                  style={{ width: '100%', padding: '9px 12px', borderRadius: 10, border: '1.5px solid #e2e8f0', fontSize: 13.5, color: '#0f172a', outline: 'none', boxSizing: 'border-box' }}
+                />
+              </div>
               <div>
                 <label style={{ fontSize: 11, fontWeight: 700, color: '#334155', textTransform: 'uppercase', letterSpacing: '0.07em', display: 'block', marginBottom: 6 }}>City</label>
-                <select value={form.city} onChange={e => setForm(f => ({ ...f, city: e.target.value }))} style={{ width: '100%', padding: '9px 12px', borderRadius: 10, border: '1.5px solid #e2e8f0', fontSize: 13.5, color: '#0f172a', outline: 'none', boxSizing: 'border-box', background: '#fff' }}>
-                  {CITIES.map(c => <option key={c}>{c}</option>)}
+                <select
+                  value={form.city}
+                  onChange={(e) => setForm((f) => ({ ...f, city: e.target.value }))}
+                  style={{ width: '100%', padding: '9px 12px', borderRadius: 10, border: '1.5px solid #e2e8f0', fontSize: 13.5, color: '#0f172a', outline: 'none', boxSizing: 'border-box', background: '#fff' }}
+                >
+                  {CITIES.map((c) => <option key={c}>{c}</option>)}
                 </select>
               </div>
               <div>
                 <label style={{ fontSize: 11, fontWeight: 700, color: '#334155', textTransform: 'uppercase', letterSpacing: '0.07em', display: 'block', marginBottom: 6 }}>Severity</label>
-                <select value={form.severity} onChange={e => setForm(f => ({ ...f, severity: e.target.value }))} style={{ width: '100%', padding: '9px 12px', borderRadius: 10, border: '1.5px solid #e2e8f0', fontSize: 13.5, color: '#0f172a', outline: 'none', boxSizing: 'border-box', background: '#fff' }}>
+                <select
+                  value={form.severity}
+                  onChange={(e) => setForm((f) => ({ ...f, severity: e.target.value }))}
+                  style={{ width: '100%', padding: '9px 12px', borderRadius: 10, border: '1.5px solid #e2e8f0', fontSize: 13.5, color: '#0f172a', outline: 'none', boxSizing: 'border-box', background: '#fff' }}
+                >
                   {[
-                    { value: 'minor',    label: 'Minor' },
+                    { value: 'minor', label: 'Minor' },
                     { value: 'moderate', label: 'Moderate' },
-                    { value: 'severe',   label: 'Severe' },
+                    { value: 'severe', label: 'Severe' },
                     { value: 'critical', label: 'Critical' },
                   ].map(({ value, label }) => <option key={value} value={value}>{label}</option>)}
                 </select>
@@ -321,27 +450,16 @@ export default function IncidentsPage() {
         </div>
       )}
 
-      {/* ── Stub-data notice ── */}
-      {usingStub && !loading && (
-        <div className="flex items-center gap-2" style={{ padding: '10px 16px', borderRadius: 10, background: 'rgba(245,158,11,0.08)', border: '1px solid rgba(245,158,11,0.3)' }}>
-          <AlertTriangle size={14} color="#f59e0b" />
-          <span style={{ fontSize: 12.5, color: '#92400e' }}>
-            Backend unreachable — showing demo data. Real incidents will appear once the API is online.
-          </span>
-        </div>
-      )}
-
-      {/* ── Type stat chips ── */}
       {loading ? (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 10 }}>
-          {TYPES.map(({ id }) => (
+          {TYPES.slice(0, 5).map(({ id }) => (
             <div key={id} className="skeleton" style={{ height: 72, borderRadius: 12 }} />
           ))}
         </div>
       ) : (
         <div className="stagger" style={{ display: 'grid', gridTemplateColumns: 'repeat(5, 1fr)', gap: 10 }}>
-          {TYPES.map(({ id, label, Icon, color, bg }) => {
-            const count = incidents.filter(i => i.type === id).length;
+          {TYPES.filter((t) => t.id !== 'event').map(({ id, label, Icon, color }) => {
+            const count = incidents.filter((i) => i.type === id).length;
             const active = activeFilter === id;
             return (
               <div
@@ -367,10 +485,9 @@ export default function IncidentsPage() {
         </div>
       )}
 
-      {/* ── Incident feed ── */}
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-        {loading && [1, 2, 3].map(n => (
-          <div key={n} className="skeleton" style={{ height: 92, borderRadius: 14, animationDelay: `${n * 0.1}s` }} />
+        {loading && [1, 2, 3].map((n) => (
+          <div key={n} className="skeleton" style={{ height: 92, borderRadius: 14 }} />
         ))}
 
         {!loading && filtered.length === 0 && (
@@ -379,12 +496,10 @@ export default function IncidentsPage() {
               <CheckCircle2 size={26} color="#10b981" />
             </div>
             <p style={{ fontSize: 15, fontWeight: 700, color: '#0f172a', margin: 0 }}>
-              {activeFilter === 'all' ? 'No incidents reported yet' : `No ${activeFilter} incidents`}
+              {activeFilter === 'all' ? 'No active incidents' : `No ${activeFilter} incidents`}
             </p>
             <p style={{ fontSize: 13, color: '#94a3b8', margin: 0 }}>
-              {activeFilter === 'all'
-                ? 'Roads are clear! Be the first to report an incident.'
-                : 'Try a different filter or clear it to see all incidents.'}
+              Expired incidents are dropped on read. Report a new one to test voting.
             </p>
             {activeFilter === 'all' && (
               <button
@@ -397,28 +512,29 @@ export default function IncidentsPage() {
             )}
           </div>
         )}
+
         {filtered.map((inc, i) => {
           const t = typeOf(inc.type);
           const sev = SEV[inc.severity] ?? SEV.low;
-          const myVote = votes[inc.id];
+          const myVote = myVotes[inc.key];
           const { Icon } = t;
+          const totalVotes = Math.max(1, inc.upvotes + inc.downvotes);
           return (
             <div
-              key={inc.id}
+              key={inc.key}
+              onClick={() => void openIncident(inc)}
               className="neon-card"
               style={{
                 padding: '18px 20px', borderLeft: `4px solid ${t.color}`,
                 display: 'flex', gap: 16, alignItems: 'flex-start',
-                animation: `slideUp 0.3s ease both`,
+                animation: 'slideUp 0.3s ease both',
                 animationDelay: `${Math.min(i * 0.05, 0.4)}s`,
               }}
             >
-              {/* type icon */}
               <div className="icon-glow" style={{ width: 40, height: 40, borderRadius: 11, background: `${t.color}18`, boxShadow: `0 0 14px ${t.color}30`, flexShrink: 0 }}>
                 <Icon size={18} style={{ color: t.color }} />
               </div>
 
-              {/* body */}
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div className="flex items-center gap-2 mb-1 flex-wrap">
                   <p style={{ fontSize: 13.5, fontWeight: 700, color: '#0f172a', margin: 0 }}>{inc.description}</p>
@@ -433,52 +549,56 @@ export default function IncidentsPage() {
                   >
                     {sev.label}
                   </span>
+                  <span style={{ fontSize: 10, fontWeight: 700, color: '#64748b' }}>
+                    score {inc.community_score}
+                  </span>
                 </div>
                 <div className="flex items-center gap-3 flex-wrap">
                   <span className="flex items-center gap-1" style={{ fontSize: 11.5, color: '#64748b' }}><MapPin size={11} />{inc.location}</span>
                   <span style={{ color: '#cbd5e1', fontSize: 12 }}>·</span>
                   <span className="flex items-center gap-1" style={{ fontSize: 11.5, color: '#94a3b8' }}><Clock size={11} />{rel(inc.created_at)}</span>
-                  <span style={{ color: '#cbd5e1', fontSize: 12 }}>·</span>
-                  <span style={{ fontSize: 11.5, color: '#94a3b8' }}>{inc.reported_by}</span>
                 </div>
-
-                {/* community score bar */}
                 <div style={{ marginTop: 8 }}>
                   <div className="progress-neon-green" style={{ maxWidth: 200 }}>
-                    <div style={{ width: `${Math.min(100, (inc.upvotes / Math.max(1, inc.upvotes + inc.downvotes)) * 100)}%` }} />
+                    <div style={{ width: `${Math.min(100, (inc.upvotes / totalVotes) * 100)}%` }} />
                   </div>
                 </div>
               </div>
 
-              {/* votes */}
-              <div className="flex items-center gap-2 shrink-0">
+              <div className="flex items-center gap-2 shrink-0" onClick={(e) => e.stopPropagation()}>
                 <button
-                  onClick={() => handleVote(inc.id, 'up')}
+                  disabled={voteBusy === inc.key}
+                  onClick={() => void handleVote(inc, 'up')}
+                  title={myVote === 'up' ? 'Already upvoted (no-op)' : myVote === 'down' ? 'Switch to upvote' : 'Confirm incident'}
                   style={{
                     display: 'flex', alignItems: 'center', gap: 5, padding: '6px 12px', borderRadius: 8, fontSize: 12, fontWeight: 700,
                     border: `1.5px solid ${myVote === 'up' ? '#10b981' : '#e2e8f0'}`,
                     background: myVote === 'up' ? 'rgba(16,185,129,0.1)' : '#fff',
                     color: myVote === 'up' ? '#10b981' : '#64748b',
-                    cursor: 'pointer', transition: 'all 0.15s',
+                    cursor: voteBusy === inc.key ? 'wait' : 'pointer',
+                    opacity: voteBusy === inc.key ? 0.7 : 1,
                     boxShadow: myVote === 'up' ? '0 0 10px rgba(16,185,129,0.25)' : 'none',
                   }}
                 >
                   <ThumbsUp size={13} />
-                  {inc.upvotes + (myVote === 'up' ? 1 : 0)}
+                  {inc.upvotes}
                 </button>
                 <button
-                  onClick={() => handleVote(inc.id, 'down')}
+                  disabled={voteBusy === inc.key}
+                  onClick={() => void handleVote(inc, 'down')}
+                  title={myVote === 'down' ? 'Already downvoted (no-op)' : myVote === 'up' ? 'Switch to downvote' : 'Mark inaccurate'}
                   style={{
                     display: 'flex', alignItems: 'center', gap: 5, padding: '6px 12px', borderRadius: 8, fontSize: 12, fontWeight: 700,
                     border: `1.5px solid ${myVote === 'down' ? '#ef4444' : '#e2e8f0'}`,
                     background: myVote === 'down' ? 'rgba(239,68,68,0.1)' : '#fff',
                     color: myVote === 'down' ? '#ef4444' : '#64748b',
-                    cursor: 'pointer', transition: 'all 0.15s',
+                    cursor: voteBusy === inc.key ? 'wait' : 'pointer',
+                    opacity: voteBusy === inc.key ? 0.7 : 1,
                     boxShadow: myVote === 'down' ? '0 0 10px rgba(239,68,68,0.25)' : 'none',
                   }}
                 >
                   <ThumbsDown size={13} />
-                  {inc.downvotes + (myVote === 'down' ? 1 : 0)}
+                  {inc.downvotes}
                 </button>
               </div>
             </div>

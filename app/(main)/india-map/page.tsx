@@ -6,7 +6,8 @@ import {
   MapPin, TrendingUp, AlertTriangle, CheckCircle,
   Navigation, ChevronRight, Radio,
 } from 'lucide-react';
-import api from '@/lib/api';
+import { indiaApi, wsBase } from '@/lib/api';
+import type { IndiaDistrict } from '@/lib/types';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -73,6 +74,22 @@ const FEED_STUB: DistrictFeedItem[] = [
   { name: 'Pune Urban',       state: 'Maharashtra',   congestion_score: 0.48, status: 'moderate' },
 ];
 
+function districtToFeed(d: IndiaDistrict): DistrictFeedItem {
+  const level = d.congestion_level ?? 'low';
+  // The API ratio is free-flow/current speed and may exceed 1; normalize it for UI.
+  const score = level === 'high'
+    ? Math.min(1, Math.max(0.75, d.congestion_ratio / 7))
+    : level === 'medium'
+      ? Math.min(0.74, Math.max(0.4, d.congestion_ratio / 7))
+      : Math.min(0.39, Math.max(0.05, d.congestion_ratio / 7));
+  return {
+    name: d.district,
+    state: d.state,
+    congestion_score: score,
+    status: level === 'high' ? 'critical' : level === 'medium' ? 'moderate' : 'fluid',
+  };
+}
+
 const INDIA_PATH = `M 180 30 L 200 25 L 230 30 L 260 20 L 290 25 L 310 35 L 340 30 L 360 50 L 380 60 L 400 55 L 420 70 L 430 90 L 440 110 L 450 130 L 460 150 L 470 170 L 480 195 L 490 210 L 500 225 L 505 240 L 510 260 L 505 280 L 495 295 L 480 310 L 460 320 L 445 330 L 430 340 L 415 355 L 400 365 L 390 380 L 380 395 L 370 410 L 360 420 L 350 430 L 340 440 L 330 455 L 320 460 L 310 450 L 305 440 L 295 430 L 285 420 L 275 405 L 265 390 L 255 375 L 245 360 L 235 350 L 225 335 L 215 320 L 205 305 L 195 290 L 185 275 L 175 260 L 165 245 L 160 230 L 155 215 L 150 200 L 145 185 L 140 170 L 138 155 L 135 140 L 130 125 L 125 110 L 120 95 L 118 80 L 120 65 L 128 52 L 140 42 L 155 36 L 170 32 Z`;
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -105,7 +122,7 @@ function bezierPath(x1: number, y1: number, x2: number, y2: number): string {
 // ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function IndiaMapPage() {
-  const [feedItems,    setFeedItems]    = useState<DistrictFeedItem[]>(FEED_STUB);
+  const [feedItems,    setFeedItems]    = useState<DistrictFeedItem[]>([]);
   const [tab,          setTab]          = useState<'all' | 'critical' | 'fluid'>('all');
   const [intensity,    setIntensity]    = useState(0.7);
   const [overview,     setOverview]     = useState({ avg_congestion: 0.42, flow_rate: 92, districts: 766, critical_count: 2 });
@@ -113,17 +130,28 @@ export default function IndiaMapPage() {
   const [latency,      setLatency]      = useState(1.2);
   const [selectedCity, setSelectedCity] = useState<CityDef | null>(null);
   const [wsConnected,  setWsConnected]  = useState(false);
+  const [indiaData, setIndiaData] = useState<Record<string, unknown>>({});
+  const [dataPanel, setDataPanel] = useState<'cities' | 'states' | 'hotspots' | 'districts'>('cities');
+  const [districtLoading, setDistrictLoading] = useState(true);
   const wsRef        = useRef<WebSocket | null>(null);
   const connectWSRef = useRef<() => void>(() => {});
+  const panelRequestsRef = useRef(new Set<string>());
 
   const connectWS = useCallback(() => {
-    const wsBase = (process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000/api/v1')
-      .replace('http', 'ws').replace('https', 'wss');
-    const ws = new WebSocket(`${wsBase}/india/ws/districts`);
+    if (wsRef.current && (wsRef.current.readyState === WebSocket.OPEN || wsRef.current.readyState === WebSocket.CONNECTING)) {
+      return;
+    }
+    const base = wsBase().replace(/\/$/, '');
+    const ws = new WebSocket(`${base}/india/ws/districts`);
     wsRef.current = ws;
     ws.onopen  = () => setWsConnected(true);
-    ws.onclose = () => { setWsConnected(false); setTimeout(() => connectWSRef.current(), 5000); };
-    ws.onerror = () => ws.close();
+    ws.onclose = () => {
+      setWsConnected(false);
+      setTimeout(() => connectWSRef.current(), 5000);
+    };
+    ws.onerror = () => {
+      try { ws.close(); } catch { /* ignore */ }
+    };
     ws.onmessage = (event) => {
       try {
         const data = JSON.parse(event.data);
@@ -151,11 +179,53 @@ export default function IndiaMapPage() {
   useEffect(() => { connectWSRef.current = connectWS; });
 
   useEffect(() => {
-    api.get('/india/overview').then((r) => r.data && setOverview((p) => ({ ...p, ...r.data }))).catch(() => {});
+    // Critical path: overview + one paginated district page. Each has a 6s ceiling.
+    void Promise.allSettled([
+      indiaApi.overview(),
+      indiaApi.districts({ page: 1, size: 50 }),
+      indiaApi.districtStates(),
+    ]).then(([overviewRes, districtRes, stateRes]) => {
+      if (overviewRes.status === 'fulfilled' && overviewRes.value.data) {
+        setOverview((p) => ({ ...p, ...overviewRes.value.data }));
+      }
+      if (districtRes.status === 'fulfilled') {
+        const data = districtRes.value.data;
+        setFeedItems(data.districts.slice(0, 50).map(districtToFeed));
+        setOverview((p) => ({ ...p, districts: data.total }));
+        setIndiaData((p) => ({ ...p, districts: data }));
+      } else {
+        // Honest visual fallback only if REST is unavailable.
+        setFeedItems(FEED_STUB);
+      }
+      if (stateRes.status === 'fulfilled') {
+        setIndiaData((p) => ({ ...p, states: stateRes.value.data }));
+      }
+      setDistrictLoading(false);
+    });
+
     connectWS();
     const id = setInterval(() => setSecondsAgo((s) => s + 2), 2000);
-    return () => { clearInterval(id); wsRef.current?.close(); };
+
+    return () => {
+      clearInterval(id);
+      wsRef.current?.close();
+    };
   }, [connectWS]);
+
+  // Load non-critical datasets only when their panel is opened.
+  useEffect(() => {
+    if (
+      indiaData[dataPanel] != null
+      || dataPanel === 'districts'
+      || dataPanel === 'states'
+      || panelRequestsRef.current.has(dataPanel)
+    ) return;
+    panelRequestsRef.current.add(dataPanel);
+    const request = dataPanel === 'cities' ? indiaApi.cities() : indiaApi.hotspots();
+    void request
+      .then((res) => setIndiaData((p) => ({ ...p, [dataPanel]: res.data })))
+      .catch(() => setIndiaData((p) => ({ ...p, [dataPanel]: { error: 'Request exceeded 6 seconds' } })));
+  }, [dataPanel, indiaData]);
 
   const displayed = tab === 'critical' ? feedItems.filter((f) => f.status === 'critical')
                   : tab === 'fluid'    ? feedItems.filter((f) => f.status === 'fluid')
@@ -191,10 +261,10 @@ export default function IndiaMapPage() {
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '6px 13px', borderRadius: 99, background: wsConnected ? 'rgba(34,197,94,0.12)' : 'rgba(239,68,68,0.1)', border: `1px solid ${wsConnected ? 'rgba(34,197,94,0.3)' : 'rgba(239,68,68,0.25)'}`, color: wsConnected ? '#4ade80' : '#f87171', fontSize: 11.5, fontWeight: 700 }}>
               <span className={wsConnected ? 'pulse-dot' : ''} style={{ width: 7, height: 7, borderRadius: '50%', background: wsConnected ? '#22c55e' : '#ef4444', display: 'inline-block' }} />
-              {wsConnected ? 'WebSocket Live' : 'Connecting…'}
+              {wsConnected ? 'WebSocket Live' : 'Offline — reconnecting…'}
             </div>
             <button
-              onClick={() => api.get('/india/overview').then((r) => r.data && setOverview((p) => ({ ...p, ...r.data }))).catch(() => {})}
+              onClick={() => indiaApi.overview().then((r) => r.data && setOverview((p) => ({ ...p, ...r.data }))).catch(() => {})}
               className="btn-neon"
               style={{ display: 'flex', alignItems: 'center', gap: 6, padding: '7px 16px', borderRadius: 10, fontSize: 12.5, fontWeight: 600, cursor: 'pointer' }}
             >
@@ -533,7 +603,9 @@ export default function IndiaMapPage() {
             {displayed.length === 0 && (
               <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: 180, gap: 10 }}>
                 <CheckCircle size={32} color="#d1fae5" />
-                <p style={{ color: '#94a3b8', fontSize: 13 }}>No districts in this category</p>
+                <p style={{ color: '#94a3b8', fontSize: 13 }}>
+                  {districtLoading ? 'Loading districts…' : 'No districts in this category'}
+                </p>
               </div>
             )}
             {displayed.map((item, i) => {
@@ -595,6 +667,13 @@ export default function IndiaMapPage() {
             </span>
           </div>
         </div>
+      </div>
+
+      <div className="neon-card" style={{ padding: 14 }}>
+        <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
+          {(['cities', 'states', 'hotspots', 'districts'] as const).map((name) => <button key={name} onClick={() => setDataPanel(name)} className={dataPanel === name ? 'btn-gradient' : 'btn-neon'} style={{ padding: '6px 10px', borderRadius: 8, fontSize: 11, textTransform: 'capitalize' }}>{name}</button>)}
+        </div>
+        <pre style={{ margin: 0, maxHeight: 120, overflow: 'auto', whiteSpace: 'pre-wrap', fontSize: 10, color: '#64748b' }}>{JSON.stringify(indiaData[dataPanel] ?? 'Loading…', null, 2)}</pre>
       </div>
 
       <style>{`

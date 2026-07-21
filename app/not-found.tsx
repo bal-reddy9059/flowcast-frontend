@@ -1,7 +1,6 @@
-'use client';
-
 import Link from 'next/link';
-import { Zap, Home, ArrowLeft, MapPin } from 'lucide-react';
+import { Zap, Home, MapPin } from 'lucide-react';
+import GoBackButton from '@/components/ui/GoBackButton';
 
 export default function NotFound() {
   return (
@@ -62,7 +61,6 @@ export default function NotFound() {
         >
           404
         </p>
-        {/* Map pin decoration */}
         <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -60%)' }}>
           <MapPin size={32} color="rgba(255,255,255,0.07)" />
         </div>
@@ -92,61 +90,37 @@ export default function NotFound() {
             color: '#fff',
             textDecoration: 'none',
             boxShadow: '0 4px 20px rgba(59,130,246,0.35)',
-            transition: 'opacity 0.15s, transform 0.15s',
           }}
-          onMouseEnter={e => { e.currentTarget.style.opacity = '0.9'; e.currentTarget.style.transform = 'translateY(-1px)'; }}
-          onMouseLeave={e => { e.currentTarget.style.opacity = '1'; e.currentTarget.style.transform = 'translateY(0)'; }}
         >
           <Home size={15} />
           Go to Dashboard
         </Link>
 
-        <button
-          onClick={() => window.history.back()}
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            gap: 8,
-            padding: '11px 24px',
-            borderRadius: 10,
-            fontSize: 14,
-            fontWeight: 600,
-            background: 'rgba(255,255,255,0.05)',
-            color: '#94a3b8',
-            border: '1px solid rgba(255,255,255,0.1)',
-            cursor: 'pointer',
-            transition: 'background 0.15s, color 0.15s',
-          }}
-          onMouseEnter={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.09)'; e.currentTarget.style.color = '#e2e8f0'; }}
-          onMouseLeave={e => { e.currentTarget.style.background = 'rgba(255,255,255,0.05)'; e.currentTarget.style.color = '#94a3b8'; }}
-        >
-          <ArrowLeft size={15} />
-          Go Back
-        </button>
+        {/* Client component for browser back navigation */}
+        <GoBackButton />
       </div>
 
       {/* Quick nav links */}
       <div style={{ marginTop: 52, display: 'flex', gap: 8, flexWrap: 'wrap', justifyContent: 'center' }}>
         {[
-          { label: 'India Map',  href: '/india-map' },
-          { label: 'Analytics', href: '/analytics' },
-          { label: 'Incidents', href: '/incidents' },
-          { label: 'ML Predict', href: '/ml-predict' },
+          { label: 'Dashboard',      href: '/dashboard' },
+          { label: 'Crowd Monitor',  href: '/crowd-monitor' },
+          { label: 'India Map',      href: '/india-map' },
+          { label: 'Analytics',      href: '/analytics' },
+          { label: 'Incidents',      href: '/incidents' },
+          { label: 'ML Predict',     href: '/ml-predict' },
         ].map(({ label, href }) => (
           <Link
             key={href}
             href={href}
             style={{
               fontSize: 12,
-              color: '#334155',
+              color: '#475569',
               textDecoration: 'none',
               padding: '5px 14px',
               borderRadius: 99,
               border: '1px solid rgba(255,255,255,0.07)',
-              transition: 'color 0.15s, border-color 0.15s',
             }}
-            onMouseEnter={e => { e.currentTarget.style.color = '#94a3b8'; e.currentTarget.style.borderColor = 'rgba(255,255,255,0.15)'; }}
-            onMouseLeave={e => { e.currentTarget.style.color = '#334155'; e.currentTarget.style.borderColor = 'rgba(255,255,255,0.07)'; }}
           >
             {label}
           </Link>

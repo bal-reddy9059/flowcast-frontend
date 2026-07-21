@@ -5,6 +5,7 @@ import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { Zap, Eye, EyeOff, AlertCircle, ArrowRight, Activity, Map, Navigation, Shield } from 'lucide-react';
 import { useAuth } from '@/contexts/AuthContext';
+import { authApi } from '@/lib/api';
 
 function FloatingOrb({ style }: { style: React.CSSProperties }) {
   return (
@@ -71,7 +72,10 @@ export default function LoginPage() {
   const [isLoading, setIsLoading] = useState(false);
   const [mounted, setMounted] = useState(false);
 
-  useEffect(() => { setMounted(true); }, []);
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setMounted(true);
+  }, []);
 
   const handleSubmit = async (e: React.FormEvent<HTMLFormElement>) => {
     e.preventDefault();
@@ -417,7 +421,7 @@ export default function LoginPage() {
 
               {/* Google sign-in */}
               <a
-                href="http://localhost:8000/api/v1/auth/google/login"
+                href={authApi.googleLoginUrl()}
                 style={{
                   width: '100%', display: 'flex', alignItems: 'center', justifyContent: 'center',
                   gap: 10, padding: '12px', borderRadius: 12,

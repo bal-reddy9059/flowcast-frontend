@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useCallback } from 'react';
 import { Webhook, Plus, Trash2, CheckCircle2, XCircle, Clock, Copy, RefreshCw, Eye, EyeOff, X, Zap, AlertTriangle } from 'lucide-react';
-import api from '@/lib/api';
+import { webhooksApi } from '@/lib/api';
 
 interface WebhookItem {
   id: string; url: string; events: string[]; secret: string;
@@ -82,7 +82,8 @@ export default function WebhooksPage() {
 
   const fetchData = useCallback(async () => {
     try {
-      const res = await api.get('/webhooks');
+      const [res, eventTypesRes] = await Promise.all([webhooksApi.list(), webhooksApi.eventTypes()]);
+      if (Array.isArray(eventTypesRes.data)) setSelEvents(eventTypesRes.data.slice(0, 1));
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const rawHooks: any[] = Array.isArray(res.data?.webhooks ?? res.data)
         ? (res.data?.webhooks ?? res.data) : [];
@@ -118,7 +119,7 @@ export default function WebhooksPage() {
     if (!url.trim() || selEvents.length === 0) return;
     setSaving(true);
     const newH: WebhookItem = { id: Date.now().toString(), url, events: selEvents, secret: `sk_live_${Math.random().toString(36).slice(2,10)}`, is_active: true, created_at: new Date().toISOString(), success_count: 0, fail_count: 0 };
-    try { await api.post('/webhooks', { url, events: selEvents }); } catch { /* ok */ }
+    try { await webhooksApi.create({ url, events: selEvents }); } catch { /* ok */ }
     setHooks((p) => [...p, newH]);
     setSuccess('Webhook registered');
     setUrl(''); setSelEvents(['traffic.spike']); setShowForm(false); setSaving(false);
@@ -127,7 +128,7 @@ export default function WebhooksPage() {
 
   const testWebhook = async (id: string) => {
     setTesting(id);
-    try { await api.post(`/webhooks/${id}/test`); } catch { /* ok */ }
+    try { await webhooksApi.test(id); } catch { /* ok */ }
     await new Promise((r) => setTimeout(r, 1200));
     setLogs((p) => [{ id: Date.now().toString(), webhook_id: id, event: 'test.ping', status: 'success', status_code: 200, duration_ms: Math.floor(Math.random()*120+40), timestamp: new Date().toISOString(), response: '{"test":true}' }, ...p]);
     setTesting(null);
@@ -136,7 +137,7 @@ export default function WebhooksPage() {
   };
 
   const removeWebhook = async (id: string) => {
-    try { await api.delete(`/webhooks/${id}`); } catch { /* ok */ }
+    try { await webhooksApi.delete(id); } catch { /* ok */ }
     setHooks((p) => p.filter((h) => h.id !== id));
     if (selected?.id === id) setSelected(null);
   };
@@ -249,7 +250,7 @@ export default function WebhooksPage() {
 
           <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
             {hooks.map((h) => (
-              <div key={h.id} onClick={() => setSelected(h)}
+              <div key={h.id} onClick={() => { setSelected(h); void Promise.all([webhooksApi.get(h.id), webhooksApi.deliveries(h.id)]).then(([detail, deliveries]) => { setSelected(normalizeHook(detail.data)); const rows = deliveries.data?.deliveries ?? deliveries.data; if (Array.isArray(rows)) setLogs(rows.map((row) => normalizeLog(row, h.id))); }).catch(() => {}); }}
                 className="neon-card"
                 style={{ padding: 16, cursor: 'pointer', border: `1.5px solid ${selected?.id === h.id ? '#ef4444' : '#e2e8f0'}`, boxShadow: selected?.id === h.id ? '0 0 0 3px rgba(239,68,68,0.1), 0 0 20px rgba(239,68,68,0.12)' : undefined }}>
                 <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: 8 }}>
@@ -293,10 +294,15 @@ export default function WebhooksPage() {
                     style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#9ca3af', display: 'flex', padding: 2 }}>
                     {showSecret[h.id] ? <EyeOff size={11} /> : <Eye size={11} />}
                   </button>
+                    <button onClick={(e) => { e.stopPropagation(); void webhooksApi.update(h.id, { url: h.url, events: h.events, is_active: !h.is_active }).then(fetchData); }}
+                      style={{ fontSize: 10, padding: '3px 6px', borderRadius: 7, border: '1px solid #e5e7eb', background: '#fff', color: '#3b82f6', cursor: 'pointer' }}>
+                      {h.is_active ? 'Pause' : 'Enable'}
+                    </button>
                   <button onClick={(e) => { e.stopPropagation(); copySecret(h.secret); }}
                     style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#9ca3af', display: 'flex', padding: 2 }}>
                     <Copy size={11} />
                   </button>
+                  <button onClick={(e) => { e.stopPropagation(); void webhooksApi.rotateSecret(h.id).then(fetchData); }} style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#3b82f6', fontSize: 10 }}>Rotate</button>
                 </div>
               </div>
             ))}

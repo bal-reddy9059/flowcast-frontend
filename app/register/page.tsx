@@ -20,7 +20,10 @@ export default function RegisterPage() {
   const [focus, setFocus] = useState({ fullName: false, email: false, password: false, confirm: false });
   const [mounted, setMounted] = useState(false);
 
-  useEffect(() => { setMounted(true); }, []);
+  useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    setMounted(true);
+  }, []);
 
   const pwdChecks = [
     { label: '8+ characters',   ok: form.password.length >= 8 },

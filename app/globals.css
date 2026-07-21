@@ -706,3 +706,159 @@ input:focus-visible, textarea:focus-visible {
   animation: shimmer 1.8s infinite;
   border-radius: 8px;
 }
+
+/* ─── APP SHELL / RESPONSIVE NAV ─────────────────────────────────── */
+.app-header {
+  padding: 0 12px;
+}
+
+.app-main {
+  padding: 16px;
+  min-width: 0;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+@media (min-width: 1024px) {
+  .app-header {
+    padding: 0 24px;
+  }
+
+  .app-main {
+    padding: 24px;
+  }
+}
+
+@media (max-width: 639px) {
+  .app-main {
+    padding: 12px;
+  }
+
+  .app-header {
+    padding: 0 10px;
+  }
+}
+
+/* Prevent wide page grids from forcing horizontal page scroll */
+.app-main > * {
+  max-width: 100%;
+}
+
+/* ─── GLOBAL MOBILE PAGE LAYOUTS ─────────────────────────────────── */
+/* Collapse fixed multi-column inline grids used across feature pages */
+@media (max-width: 1023px) {
+  .app-main [style*="grid-template-columns: 2fr 1fr"],
+  .app-main [style*="grid-template-columns:2fr 1fr"],
+  .app-main [style*="grid-template-columns: 1.2fr 0.8fr"],
+  .app-main [style*="grid-template-columns:1.2fr 0.8fr"],
+  .app-main [style*="grid-template-columns: 1fr 340px"],
+  .app-main [style*="grid-template-columns: 1fr 390px"],
+  .app-main [style*="grid-template-columns: 1fr auto"],
+  .app-main [style*="grid-template-columns:1fr auto"],
+  .app-main [style*="grid-template-columns: 1fr 1fr 200px auto"],
+  .app-main [style*="grid-template-columns: 1fr 1fr auto"],
+  .app-main [style*="grid-template-columns: 2fr 1fr 1fr"] {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+@media (max-width: 767px) {
+  .app-main [style*="repeat(3, 1fr)"],
+  .app-main [style*="repeat(4, 1fr)"],
+  .app-main [style*="repeat(5, 1fr)"],
+  .app-main [style*="grid-template-columns: 1fr 1fr"],
+  .app-main [style*="grid-template-columns:1fr 1fr"],
+  .app-main [style*="grid-template-columns: 1fr 1fr 1fr"],
+  .app-main [style*="grid-template-columns:1fr 1fr 1fr"] {
+    grid-template-columns: 1fr !important;
+  }
+
+  .page-hero {
+    padding: 18px 16px !important;
+    border-radius: 14px !important;
+    margin-bottom: 14px !important;
+  }
+
+  .page-hero h1,
+  .page-hero .gradient-text-neon,
+  .page-hero .gradient-text-animated {
+    font-size: 22px !important;
+    line-height: 1.2 !important;
+  }
+
+  .page-hero p {
+    font-size: 12.5px !important;
+  }
+
+  .neon-card {
+    max-width: 100%;
+  }
+
+  /* Forms / inputs never overflow */
+  .app-main input,
+  .app-main select,
+  .app-main textarea,
+  .app-main button {
+    max-width: 100%;
+  }
+
+  /* Tables scroll horizontally inside cards instead of blowing the page */
+  .app-main table {
+    display: block;
+    width: 100%;
+    max-width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .app-main pre {
+    max-width: 100%;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .app-main [style*="grid-template-columns"] {
+    min-width: 0;
+  }
+
+  /* Catch-all: any remaining multi-column fixed grids → single column on phones */
+  .app-main div[style*="display: grid"][style*="1fr 1fr"],
+  .app-main div[style*="display:grid"][style*="1fr 1fr"] {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+/* Tablet: 2-up for dense KPI rows */
+@media (min-width: 640px) and (max-width: 1023px) {
+  .app-main [style*="repeat(4, 1fr)"],
+  .app-main [style*="repeat(5, 1fr)"],
+  .app-main [style*="repeat(3, 1fr)"] {
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+  }
+}
+
+/* Horizontal tab / chip strips */
+.mobile-h-scroll {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+  padding-bottom: 2px;
+}
+.mobile-h-scroll::-webkit-scrollbar {
+  display: none;
+}
+
+/* Utility: stack on small screens when applied to a flex row */
+@media (max-width: 639px) {
+  .stack-mobile {
+    flex-direction: column !important;
+    align-items: stretch !important;
+  }
+
+  .stack-mobile > * {
+    width: 100%;
+  }
+}
+
