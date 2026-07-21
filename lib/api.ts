@@ -51,7 +51,7 @@ function noteNetworkSuccess() {
   circuitOpenUntil = 0;
 }
 
-function getToken() {
+export function getAccessToken() {
   if (typeof window === 'undefined') return null;
   return localStorage.getItem(STORAGE_KEY);
 }
@@ -81,7 +81,7 @@ api.interceptors.request.use((config) => {
       })
     );
   }
-  const token = getToken();
+  const token = getAccessToken();
   if (token) config.headers.Authorization = `Bearer ${token}`;
   return config;
 });
@@ -90,7 +90,7 @@ api.interceptors.request.use((config) => {
 let refreshing: Promise<string | null> | null = null;
 
 async function tryRefresh(): Promise<string | null> {
-  const currentAccess = getToken();
+  const currentAccess = getAccessToken();
   if (!currentAccess) return null;
   try {
     const res = await axios.post(
@@ -380,7 +380,7 @@ export const etaApi = {
     const res = await api.get('/traffic/eta', { params: { location, distance_km, mode } });
     return { ...res, data: unwrapEta<import('./types').EtaResult>(res.data) };
   },
-  batch: async (body: { locations?: string[]; distance_km?: number; mode?: string } | unknown) => {
+  batch: async (body: { locations: string[]; distance_km: number; mode?: string }) => {
     const res = await api.post('/traffic/eta/batch', body);
     return { ...res, data: unwrapEta<import('./types').EtaBatchResponse>(res.data) };
   },
@@ -536,7 +536,8 @@ export const commuteApi = {
     origin: string;
     destination: string;
     mode?: string;
-    distance_km?: number;
+    distance_km: number;
+    target_arrival?: string;
   }) => {
     const res = await api.get('/commute/should-i-leave', { params });
     return { ...res, data: unwrapData<import('./types').CommuteShouldLeaveData>(res.data) };
@@ -1349,8 +1350,8 @@ export const reportsApi = {
 export const liveTrafficApi = {
   shouldILeave: (params: { origin: string; destination: string } | string) =>
     typeof params === 'string'
-      ? commuteApi.shouldILeave({ origin: params, destination: params })
-      : commuteApi.shouldILeave(params),
+      ? commuteApi.shouldILeave({ origin: params, destination: params, distance_km: 10 })
+      : commuteApi.shouldILeave({ ...params, distance_km: 10 }),
   startTrip: (body: unknown) => api.post('/trips/live/start', body),
   endTrip: (sessionId: string) => api.delete(`/trips/live/${sessionId}`),
 };

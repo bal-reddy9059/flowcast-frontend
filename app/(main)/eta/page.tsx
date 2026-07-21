@@ -83,7 +83,8 @@ export default function EtaPage() {
   }, []);
 
   useEffect(() => {
-    void loadLocations();
+    const timer = window.setTimeout(() => void loadLocations(), 0);
+    return () => window.clearTimeout(timer);
   }, [loadLocations]);
 
   const filteredLocations = useMemo(() => {
@@ -128,16 +129,18 @@ export default function EtaPage() {
       setError('Add at least one location for batch ETA.');
       return;
     }
+    if (locations.length > 10) {
+      setError('Batch ETA supports a maximum of 10 locations.');
+      return;
+    }
     setBatchLoading(true);
     setError('');
     try {
-      const res = await etaApi.batch(
-        locations.map((location) => ({
-          location,
-          distance_km: Number(batchDistance) || 10,
-          mode: 'driving',
-        })),
-      );
+      const res = await etaApi.batch({
+        locations,
+        distance_km: Number(batchDistance) || 10,
+        mode: 'driving',
+      });
       setBatch(res.data);
     } catch (e) {
       setError(errorText(e));

@@ -175,7 +175,10 @@ export default function CommutePlannerPage() {
     }
   }, [location, distanceKm]);
 
-  useEffect(() => { void fetchData(); }, [fetchData]);
+  useEffect(() => {
+    const timer = window.setTimeout(() => void fetchData(), 0);
+    return () => window.clearTimeout(timer);
+  }, [fetchData]);
 
   const checkShouldLeave = async () => {
     if (!leaveOrigin.trim() || !leaveDest.trim()) return;
@@ -184,6 +187,7 @@ export default function CommutePlannerPage() {
       const res = await commuteApi.shouldILeave({
         origin: leaveOrigin.trim(),
         destination: leaveDest.trim(),
+        distance_km: Number(distanceKm) || 10,
         mode: 'driving',
       });
       setShouldLeave(res.data);

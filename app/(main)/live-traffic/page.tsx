@@ -386,7 +386,14 @@ export default function LiveTrafficPage() {
   const checkAdvisor = async () => {
     setCheckingAdv(true);
     try {
-      const res = await api.get('/commute/should-i-leave', { params: { location } });
+      const res = await api.get('/commute/should-i-leave', {
+        params: {
+          origin: location,
+          destination: 'Work',
+          distance_km: 12,
+          mode: 'driving',
+        },
+      });
       if (res.data) setShouldLeave(res.data);
     } catch { /* keep stub */ }
     setCheckingAdv(false);
