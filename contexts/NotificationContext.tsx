@@ -36,7 +36,7 @@ function userIdFromJwt(token: string | null): string | null {
   if (!token) return null;
   try {
     const payload = JSON.parse(atob(token.split('.')[1]!.replace(/-/g, '+').replace(/_/g, '/')));
-    const id = payload.sub ?? payload.user_id ?? payload.id ?? payload.uid;
+    const id = payload.user_id ?? payload.id ?? payload.uid ?? payload.sub;
     return id != null ? String(id) : null;
   } catch {
     return null;
@@ -50,7 +50,7 @@ function hasUsableToken(token: string | null): boolean {
     const expiresAt = Number(payload.exp) * 1000;
     return !Number.isFinite(expiresAt) || expiresAt > Date.now() + 5_000;
   } catch {
-    return true;
+    return false;
   }
 }
 
@@ -130,6 +130,7 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
     wsRef.current = ws;
 
     ws.onopen = () => {
+      if (wsRef.current !== ws) return;
       attemptRef.current = 0;
       if (mountedRef.current) setIsConnected(true);
     };
@@ -144,15 +145,17 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
     };
 
     ws.onerror = () => {
+      if (wsRef.current !== ws) return;
       if (mountedRef.current) setIsConnected(false);
     };
 
     ws.onmessage = (event) => {
+      if (wsRef.current !== ws) return;
       try {
         const data = JSON.parse(event.data);
         if (data?.type === 'ping' || data?.type === 'pong' || data?.type === 'connected') {
           if (data?.type === 'ping' && ws.readyState === WebSocket.OPEN) {
-            ws.send(JSON.stringify({ type: 'pong' }));
+            ws.send('pong');
           }
           return;
         }
